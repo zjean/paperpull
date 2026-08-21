@@ -79,7 +79,11 @@ to your network."
   everything it can do. PaperPull's read-only guard protects you from
   PaperPull; it does not protect a browser from whoever is driving it.
 - **The control panel** can start a downloader. It cannot move money, but it
-  reveals which providers you use and can write to your output folders.
+  reveals which providers you use and can write to your output folders. It can
+  also type a line into a run that has paused to ask something — which is what
+  makes a mid-run sign-out recoverable here, and is limited to answering that
+  question: the command line itself is built from a fixed list of actions, and
+  nothing from a request reaches a shell.
 
 **So, minimum precautions:**
 

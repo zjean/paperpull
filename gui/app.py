@@ -14,12 +14,15 @@ copies instead with the APPS_ROOT environment variable, e.g.:
 """
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 from pathlib import Path
+from typing import Dict
 from urllib.parse import urlsplit
 
 from anyio import to_thread
@@ -233,6 +236,132 @@ def _build_cmd(app_meta: dict, account: str, action: str):
     return cmd
 
 
+# ---------------------------------------------------------------------------
+# Answering a prompt
+# ---------------------------------------------------------------------------
+#
+# Every app pauses and asks for a keypress in three places: the provider
+# signed you out mid-run, the provider is showing a security challenge, and
+# the --verify pass offering to relabel a receipt. Natively those are answered
+# in the console window the launcher opened. In the container there is no such
+# window, so the panel is the only thing that can answer, and a run that
+# nobody could answer ended with "no interactive console available".
+#
+# So a run keeps a live stdin, and this dict is how a later request finds the
+# process to write it to. The id is unguessable rather than a counter: it is
+# the only thing standing between someone who slipped past the origin check
+# and the ability to type into a running downloader.
+_RUNS: Dict[str, subprocess.Popen] = {}
+
+# An answer replies to ONE prompt. Long enough for the free-text prompt (a
+# receipt summary); everything else is a keypress or "YES".
+ANSWER_MAX_CHARS = 1000
+
+
+def _register_run(proc: subprocess.Popen) -> str:
+    run_id = secrets.token_urlsafe(8)
+    _RUNS[run_id] = proc
+    return run_id
+
+
+def _answer_line(text: str) -> str:
+    r"""One answer, one line.
+
+    A newline inside the answer would end the reply early and leave the rest
+    sitting in the pipe, to be read as the answer to whatever the app asks
+    NEXT - so "YES\nq" would confirm a full run and then quit the verify pass.
+    They are collapsed to spaces rather than refused because the only
+    free-text prompt is a receipt summary, where a pasted line break is a typo
+    and not an attempt at anything.
+    """
+    flat = (text or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return flat[:ANSWER_MAX_CHARS]
+
+
+def _live_run(run_id: str) -> subprocess.Popen:
+    """The process behind this id, or 404.
+
+    A finished run keeps its id for a moment - the stream's cleanup is what
+    removes it - so "still registered" is not the same as "still listening".
+    Writing to a dead process must not look like it worked.
+    """
+    proc = _RUNS.get(run_id)
+    if proc is None or proc.poll() is not None:
+        raise HTTPException(404, "no such run")
+    return proc
+
+
+def _send_answer(run_id: str, text: str) -> None:
+    """Deliver one line to a run that is blocked on input().
+
+    This is the only user text that reaches a running downloader. It never
+    reaches a shell: the command line itself is still built solely from
+    ACTIONS, and this goes to a waiting input() and nowhere else.
+    """
+    proc = _live_run(run_id)
+    if proc.stdin is None:
+        raise HTTPException(409, "this run is not reading input")
+    try:
+        proc.stdin.write((_answer_line(text) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+    except (BrokenPipeError, ValueError, OSError):
+        # It exited between the poll() above and the write.
+        raise HTTPException(404, "no such run")
+
+
+def _stop_run(run_id: str) -> None:
+    """End a run on request.
+
+    Needed because of the stdin above: an app can now block on a prompt
+    indefinitely, and "close the tab" should not be the only way out of that.
+    Stopping is safe - downloaded_ok is only written after a document is
+    saved, so a re-run resumes and re-fetches nothing.
+    """
+    _live_run(run_id).terminate()
+
+
+def _chunk(text: str) -> str:
+    """One SSE frame carrying console output verbatim.
+
+    JSON, because the payload is no longer a whole line: input() writes its
+    prompt without a trailing newline, and a run's output can carry newlines
+    and carriage returns anywhere. Encoding it keeps the frame single-line
+    whatever the app printed.
+    """
+    return "data: " + json.dumps({"t": text}) + "\n\n"
+
+
+async def _json_body(request: Request):
+    """The request body, or a 400 rather than a 500 for a malformed one."""
+    try:
+        return await request.json()
+    except Exception:
+        raise HTTPException(400, "expected a JSON body")
+
+
+@app.post("/api/answer", dependencies=[Depends(_same_origin_only)])
+async def api_answer(request: Request):
+    body = await _json_body(request)
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected an object")
+    run_id = body.get("run")
+    text = body.get("text", "")
+    if not isinstance(run_id, str) or not isinstance(text, str):
+        raise HTTPException(400, "run and text must be strings")
+    _send_answer(run_id, text)
+    return {"ok": True}
+
+
+@app.post("/api/stop", dependencies=[Depends(_same_origin_only)])
+async def api_stop(request: Request):
+    body = await _json_body(request)
+    run_id = body.get("run") if isinstance(body, dict) else None
+    if not isinstance(run_id, str):
+        raise HTTPException(400, "run must be a string")
+    _stop_run(run_id)
+    return {"ok": True}
+
+
 @app.get("/api/run", dependencies=[Depends(_same_origin_only)])
 def api_run(app: str, account: str = "primary", action: str = "pilot"):
     apps = discover_apps()
@@ -245,30 +374,35 @@ def api_run(app: str, account: str = "primary", action: str = "pilot"):
     # it in iterate_in_threadpool, which never calls .close() on it - so the
     # cleanup below would never run and a closed tab left the downloader going.
     async def stream():
-        yield f"data: $ {' '.join(cmd)}\n\n"
+        yield _chunk(f"$ {' '.join(cmd)}\n")
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
         try:
             proc = subprocess.Popen(
                 cmd, cwd=meta["dir"],
-                # No stdin. The panel cannot answer a prompt, so an app must
-                # not be able to ask: inheriting this server's terminal makes
-                # sys.stdin.isatty() true, and the app then asks "Whose
-                # account is this?" on a first run and waits forever for input
-                # nobody can give. Worse, input() writes its prompt without a
-                # newline, so the line-reader below never yields it - the page
-                # shows a run that started and then nothing at all.
-                # With no stdin, input() raises EOFError, the apps report that
-                # no interactive console is available, and the run ends. That
-                # matches what the panel already promises: a run that needs an
-                # answer ends rather than hanging.
-                stdin=subprocess.DEVNULL,
+                # A real stdin, so the panel can answer the prompts an app
+                # raises mid-run - see "Answering a prompt" above. It is a
+                # PIPE and not this server's terminal, which matters: a pipe
+                # is not a tty, so ensure_owner() still skips its first-run
+                # "Whose account is this?" question and `owner` stays a
+                # config-file field here. What a pipe does NOT do is raise
+                # EOFError, so an unanswered prompt now waits instead of
+                # ending the run - which is why there is a Stop button.
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                errors="replace", bufsize=1, env=env)
+                # Bytes, not text, and read below in whatever size arrives
+                # rather than by line. input() writes its prompt with no
+                # trailing newline, so a readline() reader blocks on a line
+                # that never comes and the page shows a run that started and
+                # then went silent - which is exactly what a sign-out mid-run
+                # looked like.
+                stderr=subprocess.STDOUT, env=env)
         except Exception as e:
-            yield f"data: [failed to start] {e}\n\n"
+            yield _chunk(f"[failed to start] {e}\n")
             yield "event: done\ndata: 1\n\n"
             return
+        run_id = _register_run(proc)
+        # Before any output, so the page can answer the very first prompt.
+        yield f"event: run\ndata: {run_id}\n\n"
         # Closing the browser tab closes this generator. Without the finally
         # below, the downloader kept running unseen - still driving your
         # signed-in browser over CDP and still writing PDFs and progress.json -
@@ -276,26 +410,45 @@ def api_run(app: str, account: str = "primary", action: str = "pilot"):
         # press Run again and put two runs on one progress.json, one CDP port
         # and one output folder. Stopping is safe: downloaded_ok is only set
         # after a document is saved, so a re-run resumes and re-fetches nothing.
+        #
+        # A chunk can split a multi-byte character, so decoding is incremental.
+        # errors="replace" keeps one mangled byte from ending a run that is
+        # otherwise fine.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        fd = proc.stdout.fileno()
         try:
             while True:
-                # readline blocks, so it goes to a worker thread rather than
-                # stalling the event loop for every other request.
-                line = await to_thread.run_sync(proc.stdout.readline)
-                if not line:
+                # The read blocks, so it goes to a worker thread rather than
+                # stalling the event loop for every other request - including
+                # the one carrying the answer this read is waiting for.
+                data = await to_thread.run_sync(os.read, fd, 65536)
+                if not data:
                     break
-                yield f"data: {line.rstrip()}\n\n"
+                text = decoder.decode(data)
+                if text:
+                    yield _chunk(text)
+            tail = decoder.decode(b"", True)
+            if tail:
+                yield _chunk(tail)
             code = await to_thread.run_sync(proc.wait)
-            yield "data: \n\n"
+            yield _chunk("\n")
             yield f"event: done\ndata: {code}\n\n"
         finally:
+            _RUNS.pop(run_id, None)
             if proc.poll() is None:
                 proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-            if proc.stdout:
-                proc.stdout.close()
+            # stdin first: a child blocked on a prompt sees EOF and stops
+            # rather than sitting in a pipe nobody can write to any more.
+            for pipe in (proc.stdin, proc.stdout):
+                if pipe:
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
@@ -345,8 +498,24 @@ HTML = r"""<!doctype html>
               text-decoration:none; font-size:14px; }
   a.desktop:hover { background:var(--panel); }
   .warn { color:#ffcf6b; }
-  .console { background:#0b0d11; margin:0; padding:16px 20px; overflow:auto;
-             font:13px/1.55 ui-monospace,Consolas,monospace; white-space:pre-wrap; }
+  .console { background:#0b0d11; margin:0; padding:16px 20px; overflow:auto; flex:1;
+             min-height:0; font:13px/1.55 ui-monospace,Consolas,monospace; white-space:pre-wrap; }
+  /* Answering a prompt. Present for the whole run, highlighted only while
+     something is actually waiting - the apps pause on a sign-out, a security
+     challenge, and every receipt the --verify pass offers to relabel. */
+  .reply { border-top:1px solid var(--line); padding:10px 20px; background:var(--panel); }
+  .reply.pending { border-top:2px solid var(--accent); }
+  .reply .prompt { display:block; min-height:1.5em; margin-bottom:8px; color:var(--accent);
+                   font:13px/1.5 ui-monospace,Consolas,monospace; white-space:pre-wrap; }
+  .reply .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .reply input { flex:1; min-width:160px; padding:9px 10px; background:var(--bg);
+                 color:var(--fg); border:1px solid var(--line); border-radius:8px;
+                 font:14px/1.4 ui-monospace,Consolas,monospace; }
+  .reply input:focus { outline:none; border-color:var(--accent); }
+  .reply button { white-space:nowrap; }
+  .reply button.stop { margin-left:auto; }
+  a.signin { display:none; color:var(--accent); text-decoration:none; font-size:13px; }
+  a.signin:hover { text-decoration:underline; }
   .status { padding:8px 20px; border-bottom:1px solid var(--line); font-size:13px; color:var(--muted); }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted); margin-right:8px; }
   .dot.run { background:var(--accent); animation:pulse 1s infinite; }
@@ -374,11 +543,25 @@ HTML = r"""<!doctype html>
        ↻ <b>Safe to re-run.</b> Run All and Resume skip any statement or receipt
        you've already downloaded — nothing is ever fetched twice, even if you
        deleted the PDFs after importing them elsewhere.</p>
+    <p class="hint">💬 <b>A run can ask you something.</b> If a provider signs you
+       out mid-run, or asks you to prove you are human, the run pauses and the
+       question appears under the console — fix it in the browser, then press
+       Continue. Nothing is lost while it waits.</p>
     <p class="hint warn" id="venvwarn" style="display:none"></p>
   </div>
   <div style="display:flex; flex-direction:column; min-width:0;">
     <div class="status"><span class="dot" id="dot"></span><span id="statustext">idle</span></div>
     <pre class="console" id="console"></pre>
+    <div class="reply" id="reply" hidden>
+      <span class="prompt" id="prompt"></span>
+      <div class="row">
+        <input id="answer" autocomplete="off" spellcheck="false"
+               placeholder="answer the run — Enter to send">
+        <button id="continue">Continue ⏎</button>
+        <a class="signin" id="signin" target="_blank" rel="noopener">🖥 Sign in on the browser desktop ↗</a>
+        <button class="stop" id="stop">Stop run</button>
+      </div>
+    </div>
   </div>
 </main>
 <footer>
@@ -386,8 +569,9 @@ HTML = r"""<!doctype html>
   <span>☕ <a href="https://ko-fi.com/rheeloaded" target="_blank" rel="noopener">Support this project on Ko-fi</a></span>
 </footer>
 <script>
-let META = null, es = null;
+let META = null, es = null, RUN = null, promptTimer = null, promptFrom = 0, stopping = false;
 const $ = id => document.getElementById(id);
+const actionButtons = () => document.querySelectorAll('#actions button');
 
 async function load() {
   META = await (await fetch('/api/apps')).json();
@@ -426,22 +610,107 @@ function onApp() {
   else warn.style.display='none';
 }
 function setStatus(cls, text) { $('dot').className = 'dot ' + cls; $('statustext').textContent = text; }
+
+// -- the console, and the prompts that appear in it ------------------------
+// Output arrives as raw chunks rather than whole lines, because input() writes
+// its prompt without a newline. That is also how a prompt is spotted: output
+// that stops mid-line and stays that way is an app waiting for an answer.
+function append(text) {
+  const con = $('console');
+  con.textContent += text;
+  con.scrollTop = con.scrollHeight;
+}
+function tailLine() {
+  const t = $('console').textContent;
+  return t.slice(t.lastIndexOf('\n') + 1);
+}
+function watchForPrompt() {
+  clearTimeout(promptTimer);
+  if ($('console').textContent.endsWith('\n')) { clearPrompt(); return; }
+  promptTimer = setTimeout(markPrompt, 400);
+}
+function markPrompt() {
+  if (!RUN) return;
+  $('reply').classList.add('pending');
+  $('prompt').textContent = tailLine().trim() || 'Waiting for an answer.';
+  $('answer').focus();
+  // A sign-out or a challenge is fixed in the browser itself, which in a
+  // container is somewhere else entirely — so say where. Only what the app
+  // printed since the LAST answer counts: read further back and the sign-out
+  // wording from an earlier pause still matches, and every later prompt (the
+  // --verify pass asks once per receipt) wrongly points at the desktop.
+  const recent = $('console').textContent.slice(promptFrom);
+  const needsBrowser = /signed you out|sign in|challenge|verification|captcha|robot/i.test(recent);
+  const link = $('signin');
+  if (needsBrowser && META.browser_url) { link.href = META.browser_url; link.style.display = 'inline-block'; }
+  else link.style.display = 'none';
+}
+function clearPrompt() {
+  clearTimeout(promptTimer);
+  $('reply').classList.remove('pending');
+  $('prompt').textContent = '';
+  $('signin').style.display = 'none';
+}
+async function answer() {
+  if (!RUN) return;
+  const text = $('answer').value;
+  const r = await fetch('/api/answer', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({run: RUN, text})});
+  if (!r.ok) { append('\n[nothing is waiting for an answer]\n'); clearPrompt(); return; }
+  // The run has a pipe, not a terminal, so it never echoes what we sent.
+  append(text + '\n');
+  promptFrom = $('console').textContent.length;
+  $('answer').value = '';
+  syncAnswerButton();
+  clearPrompt();
+}
+async function stopRun() {
+  if (!RUN) return;
+  stopping = true;
+  setStatus('run', 'stopping…');
+  await fetch('/api/stop', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({run: RUN})});
+}
+function syncAnswerButton() {
+  $('continue').textContent = $('answer').value ? 'Send ⏎' : 'Continue ⏎';
+}
+$('continue').onclick = answer;
+$('stop').onclick = stopRun;
+$('answer').oninput = syncAnswerButton;
+$('answer').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); answer(); } };
+
+function endRun(cls, text) {
+  setStatus(cls, text);
+  RUN = null;
+  clearPrompt();
+  $('reply').hidden = true;
+  actionButtons().forEach(b => b.disabled = false);
+  if (es) { es.close(); es = null; }
+}
 function run(action) {
   if (es) es.close();
   const app = $('app').value, account = $('account').value;
   $('console').textContent = '';
+  promptFrom = 0; stopping = false;
+  $('answer').value = ''; syncAnswerButton(); clearPrompt();
   setStatus('run', `running ${action} — ${app} / ${account}`);
-  document.querySelectorAll('button').forEach(b => b.disabled = true);
+  actionButtons().forEach(b => b.disabled = true);
   es = new EventSource(`/api/run?app=${encodeURIComponent(app)}&account=${encodeURIComponent(account)}&action=${action}`);
-  const con = $('console');
-  es.onmessage = e => { con.textContent += e.data + '\n'; con.scrollTop = con.scrollHeight; };
+  // Arrives before any output, so even a first-line prompt can be answered.
+  es.addEventListener('run', e => { RUN = e.data; $('reply').hidden = false; });
+  es.onmessage = e => { append(JSON.parse(e.data).t); watchForPrompt(); };
   es.addEventListener('done', e => {
     const code = e.data;
-    setStatus(code === '0' ? 'ok' : 'err', code === '0' ? 'finished' : `exited (code ${code})`);
-    document.querySelectorAll('button').forEach(b => b.disabled = false);
-    es.close(); es = null;
+    // A run you stopped yourself did not fail. Terminating it leaves a signal
+    // exit code behind, and reporting that as an error is just wrong. The
+    // code is what settles the race where a run finished on its own between
+    // the click and the request: a clean exit is "finished", not "stopped".
+    if (stopping && code !== '0') return endRun('', 'stopped');
+    endRun(code === '0' ? 'ok' : 'err', code === '0' ? 'finished' : `exited (code ${code})`);
   });
-  es.onerror = () => { if (es) { setStatus('err','connection lost'); document.querySelectorAll('button').forEach(b=>b.disabled=false); es.close(); es=null; } };
+  es.onerror = () => { if (es) endRun('err', 'connection lost'); };
 }
 load();
 </script>

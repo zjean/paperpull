@@ -22,12 +22,18 @@ downloader driving your signed-in browser should not keep going once nothing
 is watching it. Nothing is lost — a document is only marked done after it is
 saved, so the next run picks up exactly where this one stopped.
 
-Apps run from the panel get no stdin, so nothing can stop and wait for an
-answer nobody is able to type. One thing follows from that. An app asks for
-the account holder's name on its first run, and it cannot ask here, so that
-stays unset and the index CSV's **Account Holder** column stays blank. Set it
-by running the app once from a terminal, or by putting `"owner"` in its
-`config.json`.
+A run can stop and ask you something — a provider signed you out mid-run, a
+provider wants you to prove you are human, or the `--verify` pass is offering
+to relabel a receipt. The question appears under the console, with a box to
+answer it and a **Continue** button for the ones that just want a keypress.
+Fix whatever it asked about in the browser first; nothing is lost while it
+waits, and **Stop run** ends a run you would rather not finish.
+
+What the panel gives a run is a pipe, not a terminal, and one thing follows
+from that. An app asks for the account holder's name on its first run only on
+a real console, so here it does not ask at all: the index CSV's **Account
+Holder** column stays blank until you set it by running the app once from a
+terminal, or by putting `"owner"` in its `config.json`.
 
 Or manually:
 
@@ -89,6 +95,8 @@ It finds any subfolder containing an entry script (`*_receipts.py` /
 - **Login is human-driven.** The panel opens the browser; you handle sign-in and
   2FA yourself. That's by design — the tools never touch your password.
 - If a run hits a mid-run "please sign in again" prompt (e.g. an expired
-  session), it can't answer from here — it will end. Just Login again and Resume.
+  session), it pauses and shows you the question. Sign in in the browser, then
+  press **Continue** — the run carries on from where it paused. (Resume after a
+  fresh Login works too, and skips nothing you already have.)
 - One app needs its `.venv` set up (run its `setup.bat` once) before the panel
   can run it; the UI warns when a venv is missing.

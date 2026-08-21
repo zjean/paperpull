@@ -225,15 +225,42 @@ host without `sudo`.
 Nothing here is committable, and `.gitignore` and `.dockerignore` both block
 all of it.
 
+### Answering a prompt mid-run
+
+Providers sign you out. Amazon asks whether you are a robot. When that happens
+the app stops and asks for a keypress, and natively you give it one in the
+console window the launcher opened. There is no such window here, so the panel
+is what answers instead: the question appears under the console, with a box to
+type in and a **Continue** button for the ones that only want Enter. When the
+question is about your session, a link to the browser desktop appears next to
+it — go and fix it there, then press Continue. The run picks up mid-flight; it
+does not start over.
+
+Three prompts reach you this way. A **sign-out** and a **security challenge**
+pause any run. The **`--verify` pass** asks once per receipt whose summary it
+is unsure about, and typing a better one renames the PDF and rewrites the index
+row — a whole feature that simply had no way to work here before.
+
+Two consequences worth knowing:
+
+- A run that is waiting waits indefinitely; nothing times it out. **Stop run**
+  is how you end one, and stopping is safe — a document is only marked done
+  once it is saved, so a later run re-fetches nothing.
+- Answering is one line per question. A pasted line break is collapsed to a
+  space rather than being sent as a second answer to whatever the app asks
+  next.
+
+Under the hood the run gets a pipe on stdin, and the panel reads its output as
+raw chunks rather than whole lines. Both are necessary: `input()` writes its
+prompt with **no trailing newline**, so a line-based reader waits for a line
+that never arrives and the page shows a run that started and then went silent.
+That is precisely what a mid-run sign-out used to look like.
+
 ## Limits
 
-- **No stdin.** Same as the native panel: an app that needs to ask something
-  mid-run ends instead of hanging. If a session expires during a run, sign in
-  again on the desktop and press **Resume** — nothing is lost, because a
-  document is only marked done once it is saved.
-- **The account holder stays unset.** An app asks for it on a first
-  interactive run and cannot ask here, so the index CSV's *Account Holder*
-  column stays blank. Put `"owner"` in the app's `config.json` instead.
+- **The account holder stays unset.** An app asks for it only on a real
+  console, and a pipe is not one, so the index CSV's *Account Holder* column
+  stays blank. Put `"owner"` in the app's `config.json` instead.
 - **Bot-protected providers are untested here.** `walmart` and `verizon` need a
   branded browser, which this stack does have — it is real Google Chrome, not
   the Playwright Chromium. But a Selkies/Wayland desktop fingerprints

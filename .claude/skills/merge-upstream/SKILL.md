@@ -136,10 +136,22 @@ This fork's whole divergence, so you know what to expect:
 
 | File | This fork | On conflict |
 |---|---|---|
-| `gui/app.py` | **The only upstream file edited.** Three additions: `_allowed_hosts()` for the reverse-proxy hostname, `_remote_browser()` so Login means `--login`, and three extra keys from `/api/apps`. Plus a desktop link and a gated venv warning in the HTML. | Take upstream's version, then re-apply the three additions. `gui/tests/test_remote_browser.py` tells you when you're done. |
+| `gui/app.py` | **The most-edited upstream file.** Four areas: `_allowed_hosts()` for the reverse-proxy hostname, `_remote_browser()` so Login means `--login`, three extra keys from `/api/apps`, and the prompt channel below. Plus a desktop link, a gated venv warning, and the reply row in the HTML. | Take upstream's version, then re-apply all four. `gui/tests/test_remote_browser.py` and `gui/tests/test_prompts.py` tell you when you're done. |
+| `gui/README.md` | Two paragraphs rewritten for the prompt channel: a run can be answered from the panel, and the account-holder question is skipped because a pipe is not a tty. | Take upstream's version, then re-apply. |
 | `.gitignore`, `README.md`, `SECURITY.md` | Docker sections appended | Keep both sides; ours is additive. |
 | `Dockerfile`, `docker-compose.yml`, `docker/**` (including `docker/browser/`, the derived linuxserver/chrome image), `.dockerignore`, `.env.example`, `tools/docker_smoke.py`, `gui/tests/**`, `docs/docker.md`, `docs/upstream.md`, `.github/workflows/**`, `.claude/skills/**` | New here; upstream has no version | Cannot conflict. |
 | `apps/**`, `core/**`, `tools/*.py` (others), `docs/**` | Untouched | Take upstream. |
+
+### The one silent regression to watch for
+
+Upstream decided in 0.7.1 that a panel run gets **no stdin** (`stdin=DEVNULL`),
+because natively nothing could answer a prompt. This fork overrides that: the
+run gets a `PIPE`, the output is read as chunks rather than lines, and
+`/api/answer` writes the reply. Take upstream's version of that `Popen` call by
+accident and the container regresses to "a sign-out ends the run", with every
+test still green except `gui/tests/test_prompts.py`. If any hunk in the merge
+touches `stdin=`, `readline`, or `_chunk`, read the whole `stream()` function
+before accepting it.
 
 The `.bat` and `.command` launchers and `setup-all.*` are **deliberately left
 in place unmaintained**. Docker is the supported path, but deleting files
