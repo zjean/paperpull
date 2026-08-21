@@ -138,6 +138,16 @@ class Document:
         return cls(**d)
 
 
+class Parked(Exception):
+    """This account needs a human, and no human is present.
+
+    Raised only in --unattended mode. Not a failure: main() turns it into a
+    printed line and exit code 0, so a scheduled run that finds a dead
+    session is quiet rather than alarming. Real failures keep their non-zero
+    codes, which is what keeps cron alerting worth reading.
+    """
+
+
 class App:
     def __init__(self, args):
         self.args = args
@@ -163,6 +173,7 @@ class App:
         self.sentinel = JsonStore(self.paths.sentinel_json, self.paths.backups)
         self.sentinel.load()
         self._identity_verified = False
+        self._warm_marked = False
         self.index_csv = CsvFile(self.paths.document_index_csv,
                                  DOCUMENT_INDEX_COLUMNS, self.paths.backups)
         self.rules = doc_types.load_rules()
@@ -265,20 +276,38 @@ class App:
     # -- session safety ----------------------------------------------------
 
     def check_session(self, page) -> None:
+        unattended = getattr(self.args, "unattended", False)
         challenge = site.detect_security_challenge(page)
         if challenge:
             self.progress.save(backup=True)
+            if unattended:
+                self._park(f"security challenge: {challenge}")
             print(f"\n!! {challenge}")
             print("Stopped. Please resolve it yourself in the browser window.")
             print("I will NOT attempt to bypass any security check.")
             ask("Press Enter once the page looks normal (or Ctrl+C to quit)... ")
         if site.looks_signed_out(page):
             self.progress.save(backup=True)
+            if unattended:
+                self._park("signed out")
             print("\n!! Simyo appears to have signed you out.")
             print("Please sign in again in the open browser window.")
             print("Sign in in the SAME tab, and do not open a second one -")
             print("a second Mijn Simyo tab signs you out of both.")
             ask("Press Enter after you are signed in... ")
+        if not self._warm_marked:
+            # Once per run, not once per document: check_session runs for
+            # every download, and JsonStore rewrites the whole file on each
+            # update. A scheduler only needs to know the session was alive at
+            # a known moment, and the panel's account list reads the same
+            # field - so this is recorded in interactive runs too, not just
+            # unattended ones.
+            sentinel.mark_warm(self.sentinel, now_iso())
+            self._warm_marked = True
+
+    def _park(self, reason: str):
+        sentinel.park(self.sentinel, reason, now_iso())
+        raise Parked(reason)
 
     # -- account identity --------------------------------------------------
 
@@ -546,6 +575,14 @@ class App:
 
     def process(self, docs: List[Document], dry_run: bool = False):
         page = self.page()
+        # check_session before ensure_identity, not after: --resume reaches
+        # this without ever calling cmd_discover first, so ensure_identity
+        # would otherwise be the first thing to touch the page. A dead
+        # session makes collect_documents come back empty, which identity.py
+        # reads as UNKNOWN rather than "signed out" - the wrong diagnosis and
+        # the wrong exit path. Checking the session first gives check_session
+        # the first look, so a dead session is parked, not misreported.
+        self.check_session(page)
         self.ensure_identity(page)
         for i, doc in enumerate(docs, 1):
             print(f"\n[{i}/{len(docs)}] {doc.date or '(no date)'}  "
@@ -562,6 +599,12 @@ class App:
                 self.download_one(page, doc, filename)
             except KeyboardInterrupt:
                 print("\nInterrupted. Progress saved; run --resume to continue.")
+                raise
+            except Parked:
+                # Not a per-document failure: the session died, and every
+                # remaining document would only repeat the same diagnosis.
+                # Let it propagate to main(), which prints one line and exits
+                # 0 - the whole point of parking instead of asking.
                 raise
             except Exception as e:
                 log.exception("Failed on %s", doc.key)
@@ -878,6 +921,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--adopt-identity", action="store_true",
                     help="record which account this config's tab belongs to. "
                          "Do this once, on a tab you just signed in yourself.")
+    ap.add_argument("--unattended", action="store_true",
+                    help="never ask a question: if the session is dead, park "
+                         "this account and exit 0. For scheduled runs.")
     ap.add_argument("--open-browser", action="store_true",
                     help="launch a sign-in browser using this config's profile/port")
     return ap
@@ -888,6 +934,17 @@ def main(argv=None):
     for d in (args.start_date, args.end_date):
         if d and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
             print(f"Bad date '{d}': use YYYY-MM-DD")
+            return 2
+    if args.unattended:
+        # These are the only commands that never need an answer from a person.
+        # --all asks for confirmation, --adopt-identity is the one moment
+        # identity is taken on trust, and --open-browser is a human sitting
+        # down. Refusing here beats hanging in a container at 3am.
+        if not (args.discover or args.resume or args.verify):
+            print("--unattended works with --discover, --resume or --verify only.")
+            return 2
+        if args.adopt_identity:
+            print("--adopt-identity is never done unattended.")
             return 2
     app = App(args)
     try:
@@ -912,6 +969,9 @@ def main(argv=None):
         else:
             build_parser().print_help()
             return 0
+    except Parked as e:
+        print(f"\nParked: {e}. This account needs a sign-in; nothing was run.")
+        return 0
     except KeyboardInterrupt:
         print("\nStopped by user. Progress saved.")
     finally:
