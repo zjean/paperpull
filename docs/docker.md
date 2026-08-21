@@ -128,29 +128,45 @@ restart is needed.
 
 ### First run after upgrading: adopt each account's identity
 
-If you already had PaperPull running before this version, do this once per
-account before anything else.
+**Applies to Simyo and Youfone today — the only two apps whose entry script
+understands `--adopt-identity`.** The other apps here still file whichever
+tab matching the provider's host they find, exactly as they did before this
+section existed; this identity gate is rolled out one provider at a time
+(see the spec, "Phase 1's identity gate covers Simyo only"), and the panel
+only shows the **Adopt identity** button for an app that actually accepts
+it. If you don't see the button for some other provider, that isn't a bug —
+there is nothing to press yet.
 
-A run now refuses to file documents until it can prove that the tab it is
-reading really is the account its config names. One Chrome holds every
-provider's session here, and a tab is found by matching the provider's host —
-so with two accounts of the same provider signed in, a run could otherwise
-read the wrong tab and file its documents under this config's owner, silently.
-The proof is a fingerprint of documents the account is *known* to own, and on
-an existing install nothing has recorded one yet, so every action that files a
-document refuses with `Cannot tell which account this tab belongs to`.
+If you already had Simyo or Youfone running before this version, do this
+once per account before anything else.
 
-Recording it is deliberately a thing you do, watching, once:
+A run of one of these apps now refuses to file documents until it can prove
+that the tab it is reading really is the account its config names. One
+Chrome holds every provider's session here, and a tab is found by matching
+the provider's host — so with two accounts of the same provider signed in, a
+run could otherwise read the wrong tab and file its documents under this
+config's owner, silently. The proof is a fingerprint of documents the
+account is *known* to own, and on an existing install nothing has recorded
+one yet, so every action that files a document refuses with `Cannot tell
+which account this tab belongs to`.
+
+Recording it is deliberately a thing you do, watching, once — though "once"
+is not forever for every provider: Youfone shows only six months of invoice
+history (half Simyo's twelve), so an account of it left unrun for six months
+or more will have every recorded anchor age out and need this same procedure
+again, refusing with `(aged)` in the message until you do.
 
 1. Sign in to the provider on the browser desktop, in **one** tab, and check
    the page really shows the account this config is for.
-2. In the panel, pick that app and account and press **Adopt identity**.
+2. In the panel, pick that app (Simyo or Youfone) and account and press
+   **Adopt identity**.
 3. Read back what it recorded — the panel lists the anchors under the account
    picker, and it is the one moment those are taken on trust. If they are not
    this account's documents, you adopted the wrong tab: sign in to the right
    account and press it again.
 
-Or from a shell, the same thing:
+Or from a shell, the same thing (substitute `youfone`/`youfone_docs.py` for a
+Youfone account):
 
 ```bash
 docker compose run --rm paperpull \
@@ -194,12 +210,17 @@ script's own text for the flag, the same trick the panel uses to detect
 added to an app one provider at a time, in a later change, once someone
 actually wants that provider scheduled. Until then the scheduler skips it and
 says so on one line — `does not support --unattended yet` — rather than
-either crashing or pretending it ran. Today that line fires for every patient
-app except Simyo, and Simyo is the one provider that can never take this path
-at all (below) — so the honest state of a fresh install is a scheduler that
-runs nothing and explains why, for every account, every day, until you or a
-later change adds the flag to an app you actually want pulled unattended.
-That is correct, not broken.
+either crashing or pretending it ran.
+
+**Youfone is the first provider this actually pulls.** It is patient
+(`session_lifetime_minutes` is `None` — nobody has confirmed how long a
+MyYoufone tab survives idle, so it is treated as "days" until proven
+otherwise) and its entry script now understands `--unattended`, so a fresh
+install's daily pass runs Youfone's accounts for real. Every other patient
+app still lacks the flag today and is skipped with that one-line explanation,
+for every account, every day, until a later change adds it there too — which
+is correct, not broken, and not the same "runs nothing" state this section
+described before Youfone gained it.
 
 **Simyo can never be in that first group.** Its session lasts ten minutes,
 which is shorter than a scheduled pass can rely on finding it alive; a

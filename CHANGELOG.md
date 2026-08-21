@@ -7,6 +7,52 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR** — a new app, or a cross-app feature
 - **MAJOR** — breaking changes (repo layout, config format, removing an app)
 
+## [0.10.0] — 2026-08-21
+
+### Added
+- **The identity gate, `--unattended`, and the provider lock, on Youfone.**
+  Phase 1 of 0.9.0's multi-account work covered Simyo only; this is the
+  second provider. `--discover --adopt-identity` records which account a
+  config's tab belongs to, the panel's **Adopt identity** button now works
+  for Youfone too, and `--unattended --all --yes` parks a dead session,
+  missing tab, security challenge or unprovable identity and exits 0 instead
+  of asking.
+
+  Youfone is not Simyo, and the port says so where it differs rather than
+  copying Simyo's constraints across: navigation is expected here (the SPA's
+  own router links, verified to keep the session), not forbidden; each
+  invoice's Factuur and Specificaties share one invoice number, which
+  `paperpull_core.identity.pick_anchors`'s existing id-keyed dedup collapses
+  to a single anchor (verified with dedicated tests, not assumed); and
+  Youfone's history stops at six months rather than Simyo's twelve, so
+  anchors age out roughly twice as fast — an account left unrun that long
+  will need `--adopt-identity` run again, which is correct, not a defect.
+  `session_lifetime_minutes` stays `None` and `concurrency` stays at its
+  default of 1, both recorded as stated, unverified assumptions rather than
+  guessed facts — nobody has confirmed Youfone's idle timeout or whether it
+  tolerates two live sessions.
+
+  Simyo and Youfone only; the other 16 apps behave as before.
+
+### Fixed
+- **The panel offered "Adopt identity" to all 18 apps, including the 16 that
+  cannot accept it.** `ACTIONS` is one global table with no per-app gate, so
+  pressing the button on any app other than Simyo reached that script's own
+  argparse and failed with "unrecognized arguments" instead of doing
+  nothing. `gui/app.py`'s new `_supported_actions` reads each entry script's
+  own text — the same trick `_login_flag` already used for `--open-browser`
+  and `tools/schedule.py` uses for `--unattended` — and the button is now
+  hidden per app instead of shown and failing; `_build_cmd` refuses the same
+  way server-side, behind the hidden button.
+
+  The account list had the same shape of bug one layer up: the "no identity
+  recorded... press Adopt identity" warning and the "· unidentified" label
+  were shown for every account of every app whenever `identified` was false
+  — which, for the 16 apps that never call `ensure_identity`, is always.
+  Hiding the button without also fixing this would have told a user to press
+  a button that no longer exists. Both are now shown only for an app that
+  actually has the gate.
+
 ## [0.9.0] — 2026-08-21
 
 ### Added
