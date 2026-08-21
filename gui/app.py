@@ -883,12 +883,24 @@ function updateActionButtons() {
     b.style.display = supported.has(b.dataset.action) ? '' : 'none';
   }
 }
+// True only for an app whose entry script accepts --adopt-identity (see
+// _supported_actions). `identified` and `state` come straight off
+// sentinel.json and are permanently false/"" for every OTHER app - not
+// because those accounts failed some check, but because nothing ever asked
+// the question. Without this guard the panel told all 18 apps' users that
+// runs "refuse until you press Adopt identity" and showed "unidentified" on
+// every account, for 16 apps where no run refuses anything and no button
+// exists to press - a dead end, not a warning.
+function identityGated(m) {
+  return (m.supported_actions || []).includes('adopt');
+}
 function onApp() {
   const m = META.apps[$('app').value];
   updateActionButtons();
   const accSel = $('account'); accSel.innerHTML = '';
+  const gated = identityGated(m);
   const accountLabel = (a) => {
-    if (!a.identified) return a.name + ' · unidentified';
+    if (gated && !a.identified) return a.name + ' · unidentified';
     if (a.state === 'parked') return a.name + ' · needs sign-in';
     if (a.state === 'warm') return a.name + ' · alive ' + (a.last_alive || '').slice(0, 16);
     return a.name;
@@ -911,7 +923,7 @@ function showIdentity() {
   const a = (m.accounts || []).find(x => x.name === $('account').value);
   const el = $('identity');
   if (!a) { el.textContent = ''; return; }
-  if (!a.identified) {
+  if (identityGated(m) && !a.identified) {
     el.textContent = '⚠ No identity recorded for this account yet. Sign in, '
       + 'check the browser really shows THIS account, then press Adopt '
       + 'identity once. Runs that file documents refuse until you have.';

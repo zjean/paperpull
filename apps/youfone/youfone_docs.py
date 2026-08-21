@@ -23,6 +23,13 @@ First run of a config, and only ever with you watching:
                                        plus two Youfone accounts means a run
                                        could otherwise file the wrong tab's
                                        invoices under this config's owner.
+                                       NOT a one-time setup step forever:
+                                       Youfone only shows six months of
+                                       history, so an account left unrun for
+                                       six months or more will need this run
+                                       again - every command will otherwise
+                                       refuse with "cannot tell which account
+                                       this tab belongs to (aged)".
 
 Scheduled runs (no person present):
     python youfone_docs.py --unattended --all --yes
