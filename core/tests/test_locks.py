@@ -121,3 +121,29 @@ def test_release_after_being_stolen_does_not_delete_the_new_holder(tmp_path):
     who = locks.holders(tmp_path, "simyo", 1)
     assert len(who) == 1
     assert who[0]["holder"] == "someone-else"
+
+
+def test_a_third_claim_landing_during_a_restore_warns(tmp_path, monkeypatch):
+    """The disclosed residual, forced deterministically: while a steal
+    attempt is deciding that the record it moved aside is still live, an
+    unrelated third caller's O_EXCL claim fills the freed path first. The
+    restore must back off rather than overwrite that fresh claim - but it
+    must say so, since the original holder's record is now gone while that
+    holder keeps running.
+    """
+    primary = locks.acquire(tmp_path, "simyo", 1, "primary")
+    real_link = locks.os.link
+
+    def link_that_lets_a_third_claim_land_first(src, dst):
+        locks._claim(dst, "third")     # fills `path` before the real link
+        return real_link(src, dst)     # now raises FileExistsError
+
+    monkeypatch.setattr(locks.os, "link", link_that_lets_a_third_claim_land_first)
+
+    with pytest.warns(RuntimeWarning, match="lost its original holder"):
+        result = locks._steal(primary.path, "attacker", datetime.now())
+
+    assert result is None
+    who = locks.holders(tmp_path, "simyo", 1)
+    assert len(who) == 1
+    assert who[0]["holder"] == "third"

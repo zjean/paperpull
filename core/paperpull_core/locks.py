@@ -120,6 +120,19 @@ def _steal(path: Path, holder: str, now: datetime) -> Optional[Claim]:
     None if the slot legitimately belongs to someone else - restoring their
     record first, unchanged, if this call is the one that turns out to have
     grabbed it by mistake.
+
+    That restore has one accepted gap: os.rename() leaves `path` briefly
+    absent while the aside copy is being judged. If an unrelated third
+    caller's O_EXCL claim lands in that instant, it owns `path` before the
+    restore can run - the restore then correctly refuses to overwrite it
+    (see the FileExistsError branch below), but the original holder's
+    record is gone while that holder is still running, so two sessions of
+    one provider can overlap. Closing it needs sequence numbers or a real
+    lock, which the standard-library-only constraint here rules out; it is
+    accepted because it needs both a holder that outlives STALE_AFTER and a
+    third claim landing inside a single syscall, against callers - panel,
+    scheduler, terminal - that do not poll tightly. The branch below warns
+    when it fires, so it is at least visible rather than silent.
     """
     aside = path.with_name(f"{path.name}.steal-{uuid.uuid4().hex}")
     try:
@@ -154,7 +167,18 @@ def _steal(path: Path, holder: str, now: datetime) -> Optional[Claim]:
     try:
         os.link(aside, path)
     except FileExistsError:
-        pass    # someone else has since claimed the freed path; fine
+        # The gap the docstring above accepts: a third caller's own claim
+        # filled `path` while we had the original record held aside.
+        # Backing off rather than overwriting that fresh claim is correct -
+        # but the record we were trying to restore is gone for good, and
+        # its holder is still running. Surface that rather than let it pass
+        # silently, the same way release() warns on a token mismatch.
+        warnings.warn(
+            f"lock {path} lost its original holder's record during a "
+            f"stale-takeover restore - a different caller claimed the "
+            f"slot first, so two sessions of this provider may now be "
+            f"running at once",
+            RuntimeWarning, stacklevel=2)
     finally:
         aside.unlink(missing_ok=True)
     return None
