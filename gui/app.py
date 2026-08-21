@@ -21,6 +21,7 @@ import re
 import secrets
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Dict
 from urllib.parse import urlsplit
@@ -354,6 +355,37 @@ def _lock_exempt(app_meta: dict, action: str) -> bool:
     return "--verify" in flags or "--open-browser" in flags
 
 
+@app.get("/api/due", dependencies=[Depends(_same_origin_only)])
+def api_due():
+    """Which accounts are due, most perishable session first.
+
+    Same inputs and the same ordering `python tools/due.py` would print, so
+    the panel and that script never disagree about who is waiting. This is
+    what "Start sitting" walks: sign in, run, tear down, sign in to the
+    next - one provider session at a time, most-perishable-first so a
+    ten-minute session never queues behind nine that last for days.
+    Read-only: it opens no browser and starts nothing.
+
+    The import is guarded for the same reason _busy_holder's is above:
+    gui/requirements.txt is all a native install promises to have, and
+    paperpull_core lives in a sibling directory the panel does not otherwise
+    depend on. Unlike _busy_holder, though, failure here is not something to
+    quietly paper over with a default - returning an empty "due": [] would
+    read as "nothing is due today", a different and false claim from "the
+    panel cannot tell you what is due". So this reports a 503 instead, and
+    the page's Start Sitting button treats the two answers differently: an
+    empty list means stand down, a failed fetch means something is broken.
+    """
+    try:
+        sys.path.insert(0, str(HERE.parent / "core"))
+        from paperpull_core import appload, due as due_mod
+    except Exception:
+        raise HTTPException(503, "paperpull_core is not importable here")
+    accounts = appload.accounts(APPS_ROOT, _config_root())
+    today = date.today().isoformat()
+    return {"today": today, "due": due_mod.plan(accounts, today)}
+
+
 # ---------------------------------------------------------------------------
 # Answering a prompt
 # ---------------------------------------------------------------------------
@@ -669,6 +701,11 @@ HTML = r"""<!doctype html>
     <label for="account">Account</label>
     <select id="account"></select>
     <div class="actions" id="actions"></div>
+    <button class="primary" id="sit" style="width:100%; margin-top:12px;">▶ Start sitting</button>
+    <p class="hint">One sitting walks every <em>due</em> account across every
+       app, most perishable session first — sign in when asked, watch it run
+       here, then sign in to the next. This is for the providers whose
+       session dies before a cron job would ever catch it awake.</p>
     <a class="desktop" id="desktop" target="_blank" rel="noopener">🖥 Open browser desktop ↗</a>
     <p class="hint" id="steps">1. <b>Login</b> opens a browser — sign in yourself and leave it open.<br>
        2. <b>Pilot</b> tests the newest few.<br>
@@ -704,6 +741,14 @@ HTML = r"""<!doctype html>
 </footer>
 <script>
 let META = null, es = null, RUN = null, promptTimer = null, promptFrom = 0, stopping = false;
+// A sitting walks several accounts, one run at a time. `sitting` is true for
+// the whole walk; `sittingAbort` is how Stop (see stopRun) or a closed
+// confirm() ends the whole walk rather than just the run in flight.
+// `onRunEnd` is the resolver of whichever run's promise is currently
+// outstanding - set by startRun, called once by endRun - which is how a
+// sitting's `await startRun(...)` wakes up only once the run has actually
+// ended, never before.
+let sitting = false, sittingAbort = false, onRunEnd = null;
 const $ = id => document.getElementById(id);
 const actionButtons = () => document.querySelectorAll('#actions button');
 
@@ -808,6 +853,11 @@ async function answer() {
 async function stopRun() {
   if (!RUN) return;
   stopping = true;
+  // Mid-sitting, Stop has to end the whole sitting - not just this one run,
+  // leaving the loop free to sign the next account in regardless. Otherwise
+  // the one button a person reaches for to bail out would not actually bail
+  // out of anything but the current account.
+  if (sitting) sittingAbort = true;
   setStatus('run', 'stopping…');
   await fetch('/api/stop', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -828,10 +878,31 @@ function endRun(cls, text) {
   $('reply').hidden = true;
   actionButtons().forEach(b => b.disabled = false);
   if (es) { es.close(); es = null; }
+  // This is the one place a run is decided to be over - reached from the
+  // server's "done" event and from a lost connection alike (see startRun).
+  // Waking a sitting's `await startRun(...)` here, rather than anywhere
+  // else, is what stops it from ever signing the next account in while this
+  // one's subprocess might still be holding the provider's session slot.
+  if (onRunEnd) { const resolve = onRunEnd; onRunEnd = null; resolve(); }
 }
 function run(action) {
+  startRun($('app').value, $('account').value, action);
+}
+// Starts one run and returns a Promise that resolves once endRun has been
+// called for it - i.e. once the server has actually said "done" (or the
+// connection was lost), never merely once the request went out. A sitting
+// awaits this before touching the next account.
+//
+// There is no "end" SSE event in this protocol, only "run" (the very first
+// frame, carrying the run id) and "done" (the last, carrying the exit code,
+// sent right before the server closes the stream - see the `finally` in
+// api_run's stream()). onerror below is therefore not the normal
+// end-of-run signal, it is what fires if the connection drops with no
+// "done" ever having arrived. That is also why endRun always closes `es`
+// itself: an EventSource whose stream the *server* ends still auto-reconnects
+// unless something on this side calls .close() first.
+function startRun(app, account, action) {
   if (es) es.close();
-  const app = $('app').value, account = $('account').value;
   $('console').textContent = '';
   promptFrom = 0; stopping = false;
   $('answer').value = ''; syncAnswerButton(); clearPrompt();
@@ -851,7 +922,53 @@ function run(action) {
     endRun(code === '0' ? 'ok' : 'err', code === '0' ? 'finished' : `exited (code ${code})`);
   });
   es.onerror = () => { if (es) endRun('err', 'connection lost'); };
+  return new Promise(resolve => { onRunEnd = resolve; });
 }
+
+// -- the sitting: one account at a time, most perishable session first -----
+//
+// The scarce resource here is not CPU, it is a person's attention for
+// signing in. So this walks /api/due in the order it comes back (due.plan's
+// own ordering, most-perishable-session-first) and, for each account, asks
+// for a fresh sign-in and then awaits the FULL run - teardown included -
+// before ever asking about the next one. Two runs on one provider at once
+// would sign each other's session out from under the other; that is the one
+// outcome this whole feature exists to prevent.
+async function startSitting() {
+  const res = await fetch('/api/due');
+  if (!res.ok) {
+    // A failed fetch (503: paperpull_core is not importable here) is not
+    // the same fact as "nobody is due" - it means the panel cannot tell,
+    // and must not be read as "stand down".
+    alert('Cannot read the due list here.');
+    return;
+  }
+  const {due} = await res.json();
+  // A provider with no declared session lifetime can wait for a plain cron
+  // job; only a perishable one needs a person sitting down for it.
+  const queue = due.filter(a => a.session_lifetime_minutes !== null);
+  if (!queue.length) { alert('Nothing needs a person right now.'); return; }
+  sitting = true; sittingAbort = false;
+  $('sit').disabled = true;
+  try {
+    for (const a of queue) {
+      if (sittingAbort) break;
+      // Sign-in first: a perishable session has to be fresh when the pull
+      // runs, and only a person can make it fresh. Cancelling here - or
+      // pressing Stop once the run below has started - ends the whole
+      // sitting, not just this one account.
+      if (!confirm(`Sign in to ${a.app} (${a.account}) in the browser desktop, `
+                 + `in ONE tab. Press OK when you are signed in.`)) break;
+      if (sittingAbort) break;
+      await startRun(a.app, a.account, 'resume');
+    }
+  } finally {
+    sitting = false;
+    $('sit').disabled = false;
+  }
+  if (!sittingAbort) alert('Sitting done.');
+}
+$('sit').onclick = startSitting;
 load();
 </script>
 </body>
