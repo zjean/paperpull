@@ -255,6 +255,13 @@ class App:
             return self._work_page
         found = site.find_signed_in_page(ctx)
         if found is None:
+            if getattr(self.args, "unattended", False):
+                # In the Docker layout, no tab open is the single most likely
+                # reason a scheduled run finds nothing - the human just
+                # hasn't signed in yet today. That is the ordinary case, not
+                # a failure, so this parks exactly like a dead session does
+                # rather than exiting non-zero and paging someone for it.
+                self._park("no signed-in tab")
             raise SystemExit(site.no_page_help())
         self._work_page = found
         # Nothing here is ever downloaded through the browser: the PDF arrives
