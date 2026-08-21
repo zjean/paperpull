@@ -91,20 +91,32 @@ def test_the_schedulers_own_argv_reaches_discover(tmp_path, monkeypatch):
     assert "discover" in seen
 
 
-def test_the_schedulers_own_argv_passes_the_unattended_guard(capsys):
+def test_the_schedulers_own_argv_passes_the_unattended_guard(tmp_path):
     """main() refuses a flag combination that could block on a prompt, before
     App(args) exists. The scheduler's argv has to survive that check, or the
-    fix above only moves the failure earlier."""
+    fix above only moves the failure earlier.
+
+    This calls main() itself rather than re-deriving main()'s own boolean
+    expression and comparing it to itself, which is what this test used to
+    do - a comparison that stays green even if the --all-with-yes admission
+    were deleted from main(), because both sides of the assertion would
+    change together. Routing a config path that is never created makes
+    "admitted" and "refused" tell apart without a browser or a provider:
+    a refused combination returns 2 before App(args) is ever built, so the
+    missing config is never touched, while an admitted one falls through
+    into App(args) and dies on load_config's own SystemExit instead of
+    returning 2. The next reader may want to simplify this back to a plain
+    boolean check - don't; that is the exact form that stopped catching the
+    regression this file exists to prevent."""
     schedule = _schedule()
     cmd = schedule.build_command(
         {"app": "simyo", "account": "primary", "config": "x"},
         APP_DIR, APP_DIR / "simyo_docs.py")
-    args = simyo_docs.build_parser().parse_args(
-        [f for f in cmd[2:] if f not in ("x", "--config")])
-    assert args.unattended is True
-    assert (args.discover or args.resume or args.verify
-            or (args.all and args.yes))
-    assert not args.adopt_identity
+    flags = [f for f in cmd[2:] if f not in ("x", "--config")]
+    missing_config = tmp_path / "never-created" / "config.json"
+
+    with pytest.raises(SystemExit):
+        simyo_docs.main(flags + ["--config", str(missing_config)])
 
 
 # -- the sitting's action, and the one it replaced --------------------------
