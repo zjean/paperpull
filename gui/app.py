@@ -187,8 +187,18 @@ def _sentinel_for(app_dir: Path, account: str) -> dict:
     cfg_path = _config_dir(app_dir) / name
     try:
         cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
-        raw = (Path(cfg["output_dir"]) / "sentinel.json").read_text(encoding="utf-8")
-        return json.loads(raw)
+        out_dir = Path(cfg["output_dir"])
+        if not out_dir.is_absolute():
+            # Every shipped config.example.json has "output_dir": "." - which
+            # is meaningful for the downloader subprocess, launched with
+            # cwd=app_dir (see the Popen call below), but this long-running
+            # panel process has one cwd of its own (wherever uvicorn started)
+            # that is not any app's directory. So a relative path has to be
+            # resolved against app_dir, exactly like the subprocess sees it.
+            out_dir = app_dir / out_dir
+        raw = (out_dir / "sentinel.json").read_text(encoding="utf-8")
+        decoded = json.loads(raw)
+        return decoded if isinstance(decoded, dict) else {}
     except Exception:
         # No config, no output dir yet, no sentinel, or unreadable: all of
         # which mean "nothing known", never an error the panel should show.
