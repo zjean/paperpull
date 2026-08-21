@@ -98,6 +98,12 @@ to your network."
 - `PAPERPULL_ALLOWED_HOSTS` must list only the hostnames you actually serve the
   panel on. It is an exact-match allowlist, and it is what stops another site
   you have open from driving the panel. Naming a wildcard defeats it.
+- **The Clipboard permission is a real grant.** Pasting into the desktop needs
+  you to allow it for that origin (see [docs/docker.md](docs/docker.md#pasting-into-the-desktop)),
+  and it is not scoped to the paste: from then on, everything you copy while
+  that tab has focus is read and pushed into the container. Grant it to the
+  desktop's own hostname, never to a wildcard, and be aware of it when you copy
+  something unrelated with the tab still in front.
 
 **Two files are as sensitive as the PDFs.** `./browser-profile` holds live
 session cookies for every provider you have signed into — it is a

@@ -59,13 +59,55 @@ to your Caddyfile. Then:
 
 1. Open **`browser.<you>`**, log in with `BROWSER_USER` / `BROWSER_PASSWORD`.
    You get a real Chrome. Sign in to a provider — 2FA, device approval, bank
-   app, DigiD, whatever it takes. Leave the tab open.
+   app, DigiD, whatever it takes. Leave the tab open. Pasting a password in
+   there needs one browser permission first — see below.
 2. Open **`paperpull.<you>`**, pick that app, and press **Login**. It should say
    it connected and can see your documents page.
 3. **Pilot**, then **Run All**.
 
 Your PDFs land in `./data/<app>/`, alongside that app's `progress.json` and
 index CSV.
+
+### Pasting into the desktop
+
+Out of the box, copying on your machine and pasting in that Chrome pastes
+nothing — silently, with no error anywhere. The keyboard is not the problem:
+Selkies already remaps ⌘ to Ctrl for macOS clients, so ⌘V arrives as Ctrl+V.
+The session's clipboard is simply empty.
+
+Selkies pushes your clipboard into the session only while the browser you are
+*viewing* the desktop from reports the `clipboard-read` permission as
+`granted` — and it only ever queries that permission, never asks for it.
+Chrome's default is `prompt`, and the focus-time `navigator.clipboard.read()`
+that would otherwise trigger a prompt is refused outright without one. So the
+sync never starts, and both ⌘V and right-click → Paste have nothing to paste.
+
+Grant it once, in the browser you view the desktop *from*:
+
+1. On the desktop tab, click the icon left of the URL → **Site settings** →
+   **Clipboard** → **Allow**.
+2. Copy something, then click back into the desktop tab. Selkies syncs on the
+   tab *regaining focus*, so that click is what actually sends it.
+3. Paste inside the desktop. ⌘V, Ctrl+V and right-click → Paste all work now.
+
+The permission is per origin and needs HTTPS, which is another reason the
+desktop goes behind the proxy: over plain `http://` on anything but
+`localhost`, Chrome offers no Clipboard setting at all and none of this can
+work.
+
+If you would rather not grant it, Selkies' own side panel is the way through.
+It is hidden by default and there is no menu bar to find it in: press
+**Ctrl+Shift+M** (a real Ctrl, even on a Mac), or click the 15px-wide strip at
+the *vertical middle of the left edge* of the page. The hotkey is ignored while
+the page is in fullscreen, so leave fullscreen first — Ctrl+Shift+F toggles it.
+
+With the panel open, expand **Clipboard**, paste into the **Server Clipboard**
+box, then click outside the box. The blur is what sends the text to the
+session, where a paste then finds it. Tedious, but it needs no permission.
+
+Either way, know what you are enabling: with the permission granted, everything
+you copy while that tab has focus is pushed into the container — see the Docker
+section of [SECURITY.md](../SECURITY.md).
 
 ### One shared browser
 
