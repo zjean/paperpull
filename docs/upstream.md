@@ -48,6 +48,9 @@ docker run --rm paperpull:dev python -m pytest core/tests gui/tests -q -p no:cac
 docker compose up -d && docker compose exec -T paperpull python /app/tools/docker_smoke.py
 ```
 
+Upstream never touches `docker/browser/` — that image is linuxserver/chrome plus
+a socat service and contains no PaperPull code — so a merge cannot break it.
+
 A `.github/workflows/upstream-watch.yml` run every Monday opens an issue
 labelled `upstream` when there is something to pull, and says up front whether
 any file changed on both sides.

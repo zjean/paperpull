@@ -115,8 +115,14 @@ def run() -> int:
         print("\nStopping: nothing downstream can pass while the above fails.")
         return 1
 
-    server = TCPServer(("0.0.0.0", SERVE_PORT), _Handler)
-    server.allow_reuse_address = True
+    # allow_reuse_address has to be set before the bind, so it belongs on the
+    # class - assigning it to the instance happens after __init__ has already
+    # bound, and a back-to-back second run then fails on a socket still in
+    # TIME_WAIT.
+    class _Server(TCPServer):
+        allow_reuse_address = True
+
+    server = _Server(("0.0.0.0", SERVE_PORT), _Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     # Chrome is in the other container, so it cannot reach our localhost.

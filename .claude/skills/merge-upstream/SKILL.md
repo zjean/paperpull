@@ -103,11 +103,17 @@ Run all three. Do not report success on fewer.
 # Unit tests, in the image.
 docker run --rm paperpull:dev python -m pytest core/tests gui/tests -q -p no:cacheprovider
 
-# The whole stack, including a real cross-container download.
+# The whole stack, including a real cross-container download. The browser can
+# take a minute to be ready after a cold start.
 docker compose up -d
 docker compose exec -T paperpull python /app/tools/docker_smoke.py
 docker compose down
 ```
+
+If the browser never opens its DevTools port, that is one of two silent Chrome
+behaviours rather than anything upstream did: `CHROME_CLI` losing its explicit
+`--user-data-dir`, or the `browser` service losing its pinned `hostname`. Both
+are explained in `docs/docker.md`.
 
 If the smoke test's download check fails with a byte count of 0, upstream is
 not at fault — something changed about `TMPDIR`, the shared `pw-artifacts`
@@ -131,7 +137,7 @@ This fork's whole divergence, so you know what to expect:
 |---|---|---|
 | `gui/app.py` | **The only upstream file edited.** Three additions: `_allowed_hosts()` for the reverse-proxy hostname, `_remote_browser()` so Login means `--login`, and three extra keys from `/api/apps`. Plus a desktop link and a gated venv warning in the HTML. | Take upstream's version, then re-apply the three additions. `gui/tests/test_remote_browser.py` tells you when you're done. |
 | `.gitignore`, `README.md`, `SECURITY.md` | Docker sections appended | Keep both sides; ours is additive. |
-| `Dockerfile`, `docker-compose.yml`, `docker/**`, `.dockerignore`, `.env.example`, `tools/docker_smoke.py`, `gui/tests/**`, `docs/docker.md`, `docs/upstream.md`, `.github/workflows/**`, `.claude/skills/**` | New here; upstream has no version | Cannot conflict. |
+| `Dockerfile`, `docker-compose.yml`, `docker/**` (including `docker/browser/`, the derived linuxserver/chrome image), `.dockerignore`, `.env.example`, `tools/docker_smoke.py`, `gui/tests/**`, `docs/docker.md`, `docs/upstream.md`, `.github/workflows/**`, `.claude/skills/**` | New here; upstream has no version | Cannot conflict. |
 | `apps/**`, `core/**`, `tools/*.py` (others), `docs/**` | Untouched | Take upstream. |
 
 The `.bat` and `.command` launchers and `setup-all.*` are **deliberately left

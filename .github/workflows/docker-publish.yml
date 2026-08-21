@@ -4,6 +4,11 @@
 #   push to main     ->  :latest  and  :<VERSION>
 #   any push         ->  :sha-<short>   (so a bad :latest can be pinned back)
 #
+# Two images are published. `paperpull` is the panel and the apps. Its
+# companion `paperpull-browser` is linuxserver/chrome plus a socat service, and
+# it is rebuilt weekly as well as on change — a derived image that is never
+# rebuilt quietly pins you to an old Chrome.
+#
 # Tests run first and gate the publish. They are the fast ones — the container
 # stack's own smoke test needs a 4.5GB browser image, so it lives in
 # docker-smoke.yml and runs on a schedule instead of on every push.
@@ -18,6 +23,9 @@ on:
       - ".github/ISSUE_TEMPLATE/**"
   pull_request:
     branches: [main, develop]
+  schedule:
+    # Mondays 05:00 UTC, to pick up a new linuxserver/chrome.
+    - cron: "0 5 * * 1"
   workflow_dispatch:
 
 env:
@@ -120,3 +128,50 @@ jobs:
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-browser:
+    name: publish browser image
+    # Deliberately not gated on `test`: this image contains no PaperPull code,
+    # and the tests say nothing about it. The stack smoke test is what covers
+    # it, and that runs on its own schedule.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}-browser
+          tags: |
+            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.title=PaperPull sign-in browser
+            org.opencontainers.image.description=linuxserver/chrome with a supervised CDP bridge
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker/browser
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=browser
+          cache-to: type=gha,mode=max,scope=browser

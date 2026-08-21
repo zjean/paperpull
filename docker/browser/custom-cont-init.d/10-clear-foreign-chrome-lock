@@ -1,0 +1,28 @@
+#!/usr/bin/with-contenv bash
+# Chrome will not open a profile that another machine has locked.
+#
+# It records the lock as `SingletonLock -> <hostname>-<pid>`. If that hostname
+# is not ours it cannot check whether the process died, so it assumes the
+# profile is in use elsewhere and exits — with no message anywhere. A container
+# gets a new hostname on every recreate, so a persisted profile would become
+# unopenable the second time you brought the stack up.
+#
+# docker-compose.yml pins `hostname:` so this should never trigger; Chrome's
+# own stale-PID recovery handles a matching hostname fine. This is here for the
+# case where that pin is changed or removed, so the failure is a log line
+# rather than a browser that never appears.
+PROFILE="${CHROME_PROFILE_DIR:-/config/pp-profile}"
+LOCK="${PROFILE}/SingletonLock"
+
+[[ -L "$LOCK" ]] || exit 0
+
+owner="$(readlink "$LOCK")"
+owner="${owner%-*}"          # strip the -<pid>
+
+if [[ -n "$owner" && "$owner" != "$(hostname)" ]]; then
+    echo "[cdp-bridge-init] profile locked by '${owner}', we are '$(hostname)' —"
+    echo "[cdp-bridge-init] clearing the stale lock so Chrome can start."
+    rm -f "${PROFILE}/SingletonLock" \
+          "${PROFILE}/SingletonCookie" \
+          "${PROFILE}/SingletonSocket"
+fi

@@ -37,6 +37,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build the browser image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker/browser
+          load: true
+          tags: paperpull-browser:ci
+          cache-from: type=gha,scope=browser
+          cache-to: type=gha,mode=max,scope=browser
+
       - name: Bring the stack up
         run: |
           docker network create proxy
@@ -47,6 +56,7 @@ jobs:
           PAPERPULL_ALLOWED_HOSTS=paperpull.ci.invalid
           PAPERPULL_BROWSER_URL=
           PAPERPULL_IMAGE=paperpull:ci
+          PAPERPULL_BROWSER_IMAGE=paperpull-browser:ci
           EOF
           docker compose up -d
 
@@ -59,9 +69,11 @@ jobs:
             fi
             sleep 5
           done
-          echo "Chrome never opened its debugging port."
-          echo "Most likely cause: CHROME_CLI lost its explicit --user-data-dir,"
-          echo "which Chrome 136+ requires before it will enable remote debugging."
+          echo "Chrome never opened its debugging port. Two silent causes:"
+          echo " - CHROME_CLI lost its explicit --user-data-dir, which Chrome"
+          echo "   136+ requires before it will enable remote debugging."
+          echo " - the browser service lost its pinned hostname, so Chrome"
+          echo "   found its profile locked by another host and gave up."
           exit 1
 
       - name: Smoke test
@@ -77,6 +89,20 @@ jobs:
           echo "$out"
           echo "$out" | grep -qiE "connected" \
             || { echo "the app never attached to the browser"; exit 1; }
+
+      # The trap this stack used to have: the CDP bridge lived in a separate
+      # container sharing the browser's network namespace, so restarting the
+      # browser stranded it. It is an s6 service inside the browser now, and
+      # this proves the browser can be restarted on its own.
+      - name: Restarting the browser alone leaves the stack working
+        run: |
+          docker compose restart browser
+          for i in $(seq 1 60); do
+            docker compose exec -T paperpull \
+              curl -fsS -m 2 http://localhost:9222/json/version >/dev/null 2>&1 && break
+            sleep 5
+          done
+          docker compose exec -T paperpull python /app/tools/docker_smoke.py
 
       - name: Logs on failure
         if: failure()

@@ -1,0 +1,6 @@
+#!/usr/bin/with-contenv bash
+# Forward this container's outside interface to Chrome's loopback-only
+# DevTools port. The panel dials its own local socat, so the Host header
+# Chrome finally sees still says localhost — which is the only kind it
+# accepts, besides a bare IP.
+exec socat TCP-LISTEN:"${CDP_BRIDGE_PORT:-9223}",fork,reuseaddr TCP:127.0.0.1:"${CDP_PORT:-9222}"

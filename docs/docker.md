@@ -11,21 +11,22 @@ never sees a password.
                     ┌──────────────┴──────────────┐
         paperpull.<you>                    browser.<you>
               │                                  │
-     ┌────────▼─────────┐            ┌───────────▼──────────────┐
-     │    paperpull     │            │        browser           │
-     │ panel :8765      │            │ Chrome + web desktop     │
-     │ the 16 apps      │            │ :3000  (you sign in here)│
-     │ socat :9222 ─────┼──────┐     │ Chrome's DevTools port   │
-     └──────────────────┘      │     │ on 127.0.0.1:9222        │
-              │                │     └───────────▲──────────────┘
-              │                └────► browser:9223 ──┘
-              │                      ┌──────────────────────────┐
-              │                      │  cdp-bridge (socat)      │
-              │                      │  in browser's netns      │
-              │                      └──────────────────────────┘
+     ┌────────▼─────────┐            ┌───────────▼───────────────┐
+     │    paperpull     │            │         browser           │
+     │ panel  :8765     │            │ Chrome + web desktop      │
+     │ the 16 apps      │            │ :3000  (you sign in here) │
+     │                  │            │                           │
+     │ socat  :9222 ────┼───────────►│ socat  :9223              │
+     └──────────────────┘            │   └──► 127.0.0.1:9222     │
+              │                      │        Chrome's DevTools  │
+              │                      └───────────────────────────┘
       ./config  ./data                  ./browser-profile
                     └── pw-artifacts (shared) ──┘
 ```
+
+Two containers. The bridge into Chrome's DevTools port is an s6 service inside
+the browser rather than a container of its own, so its lifecycle is the
+browser's — there is no third thing to remember to restart.
 
 ## Setup
 
@@ -67,6 +68,16 @@ For a second person's accounts, add a second `browser` service with its own
 `config.<name>.json` at it. Drop the file into `./config/<app>/` and the panel
 picks the account up on its next load.
 
+### Restarting things
+
+```bash
+docker compose restart browser    # that's all — nothing else needs restarting
+```
+
+The panel's socat resolves `browser` per connection, so it reconnects on its
+own. Your signed-in sessions survive, because they live in the Chrome profile on
+`./browser-profile`, not in the container.
+
 ### Verify it works
 
 ```bash
@@ -76,7 +87,7 @@ docker compose exec paperpull python /app/tools/docker_smoke.py
 Four checks, ending with a real download across the container boundary. Run it
 after any change to the compose file, and after merging upstream.
 
-## Four things Chrome and Playwright do that shape all of this
+## Five things Chrome and Playwright do that shape all of this
 
 Each of these was found the hard way, and each fails *silently*. If you change
 the compose file or the Dockerfile, this is the list to check against.
@@ -99,17 +110,21 @@ Remove that and the whole stack stops working with no diagnostic anywhere.
 
 ### 2. That port only listens on 127.0.0.1
 
-Chrome ignores `--remote-debugging-address`. The port is reachable only from
-inside the browser container's network namespace — which is why `cdp-bridge`
-exists and why it uses `network_mode: service:browser`. That is the only
-vantage point from which `127.0.0.1:9222` can be forwarded outward.
+Chrome ignores `--remote-debugging-address`. The DevTools port is reachable only
+from *inside* the browser container, so something in there has to forward it
+outward. That is what `svc-cdp-bridge` does — a socat service added by
+`docker/browser/Dockerfile` and supervised by the image's s6, listening on 9223
+and forwarding to `127.0.0.1:9222`.
 
-Consequence: `cdp-bridge` has no hostname of its own, and restarting `browser`
-invalidates its network namespace. Restart the two together:
+It is an s6 service rather than a `/custom-cont-init.d` script because init
+scripts are expected to run to completion; a process backgrounded from one is
+unsupervised and never comes back if it dies.
 
-```bash
-docker compose restart browser cdp-bridge
-```
+It was originally a separate container sharing the browser's network namespace,
+which worked but meant restarting the browser stranded it in a namespace that no
+longer existed — so the two always had to be restarted together. Inside the
+browser, its lifecycle is simply the browser's. `docker compose restart browser`
+is the whole story, and the stack smoke test asserts it.
 
 ### 3. Chrome rejects a Host header that isn't localhost or a bare IP
 
@@ -142,6 +157,26 @@ Two things fix it, and both are required:
 
 `tools/docker_smoke.py` checks exactly this, by weighing a PDF of known size.
 
+### 5. Chrome will not open a profile another host has locked
+
+Chrome records its profile lock as a symlink, `SingletonLock -> <hostname>-<pid>`.
+If that hostname is not its own it cannot tell whether the owning process died,
+so it assumes the profile is in use elsewhere and exits — with nothing in any
+log, and no window.
+
+A container gets a fresh hostname on every recreate. So a persisted profile
+becomes unopenable the *second* time you bring the stack up, which is a
+memorable way to lose an afternoon. Hence:
+
+```yaml
+hostname: paperpull-browser
+```
+
+Pinned, the hostname always matches and Chrome's ordinary stale-PID recovery
+does the right thing. The browser image also clears a lock naming a *different*
+host at init, so if that pin is ever removed the failure is a log line rather
+than silence.
+
 ## Operating it
 
 | | |
@@ -149,11 +184,14 @@ Two things fix it, and both are required:
 | Logs | `docker compose logs -f paperpull` |
 | One-off run | `docker compose run --rm paperpull python apps/ally/ally_docs.py --discover` |
 | Update | `docker compose pull && docker compose up -d` |
-| Restart the browser | `docker compose restart browser cdp-bridge` (both — see #2) |
+| Restart the browser | `docker compose restart browser` |
 | Tests | `docker compose exec paperpull python -m pytest core/tests gui/tests -q -p no:cacheprovider` |
 
-Images publish from CI: `:latest` from `main`, `:beta` from `develop`, and a
-`:sha-<short>` on every build so you can pin back.
+Two images publish from CI — `paperpull` (panel and apps) and
+`paperpull-browser` (linuxserver/chrome plus the bridge service). `:latest` from
+`main`, `:beta` from `develop`, and a `:sha-<short>` on every build so you can
+pin back. The browser image also rebuilds weekly, so it tracks new Chrome
+releases instead of quietly pinning you to an old one.
 
 ### What is on which volume
 
@@ -182,6 +220,9 @@ all of it.
   differently than a desktop machine, and whether that passes is unknown.
 - **The image is ~490MB, the browser image ~4.5GB.** No `playwright install`
   runs in our image; `connect_over_cdp` needs the driver, not a browser binary.
+- **The browser takes a minute or so to be ready** after a cold start: the
+  desktop comes up, then labwc autostarts Chrome. Until then `Login` reports it
+  cannot connect. That is not an error, just impatience.
 
 ## Security
 
