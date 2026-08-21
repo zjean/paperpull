@@ -78,3 +78,31 @@ def test_an_unreadable_date_does_not_take_the_scheduler_down():
 def test_a_zero_cadence_beats_the_default():
     daily = acct("signal", newest="2026-08-21", cadence=0)
     assert names(due.plan([daily], "2026-08-21")) == [("signal", "primary")]
+
+
+def test_accounts_are_read_off_the_real_trees(tmp_path, monkeypatch):
+    """A config points at an output_dir; that dir holds the state we read."""
+    from paperpull_core import appload
+
+    app_dir = tmp_path / "apps" / "testco"
+    app_dir.mkdir(parents=True)
+    (app_dir / "testco_docs.py").write_text("", encoding="utf-8")
+    out = tmp_path / "data" / "testco"
+    (out).mkdir(parents=True)
+    (app_dir / "config.json").write_text(
+        '{"output_dir": "%s"}' % out.as_posix(), encoding="utf-8")
+    (out / "progress.json").write_text(
+        '{"a": {"date": "2026-06-01"}, "b": {"date": "2026-07-01"}}',
+        encoding="utf-8")
+    (out / "sentinel.json").write_text(
+        '{"session": {"state": "parked", "last_verified_alive": '
+        '"2026-07-02T10:00:00"}}', encoding="utf-8")
+
+    found = appload.accounts(tmp_path / "apps", None)
+    assert len(found) == 1
+    rec = found[0]
+    assert rec["app"] == "testco"
+    assert rec["account"] == "primary"
+    assert rec["newest_document_date"] == "2026-07-01"
+    assert rec["parked"] is True
+    assert rec["last_checked_date"] == "2026-07-02"
