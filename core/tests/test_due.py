@@ -106,3 +106,91 @@ def test_accounts_are_read_off_the_real_trees(tmp_path, monkeypatch):
     assert rec["newest_document_date"] == "2026-07-01"
     assert rec["parked"] is True
     assert rec["last_checked_date"] == "2026-07-02"
+
+
+def _healthy_app(apps_root, name):
+    """A minimal, well-formed app+account: entry script, config, progress."""
+    app_dir = apps_root / name
+    app_dir.mkdir(parents=True)
+    (app_dir / f"{name}_docs.py").write_text("", encoding="utf-8")
+    out = app_dir / "out"
+    out.mkdir()
+    (app_dir / "config.json").write_text(
+        '{"output_dir": "%s"}' % out.as_posix(), encoding="utf-8")
+    (out / "progress.json").write_text(
+        '{"a": {"date": "2026-07-01"}}', encoding="utf-8")
+    return app_dir
+
+
+def test_a_non_object_config_is_skipped_without_taking_down_the_listing(
+        tmp_path):
+    """[1, 2, 3] parses fine as JSON but is not a config - it must not crash
+    the whole pass, and the tree's other, healthy app must still be read."""
+    from paperpull_core import appload
+
+    apps_root = tmp_path / "apps"
+    apps_root.mkdir()
+    broken = apps_root / "broken"
+    broken.mkdir()
+    (broken / "broken_docs.py").write_text("", encoding="utf-8")
+    (broken / "config.json").write_text("[1, 2, 3]", encoding="utf-8")
+    _healthy_app(apps_root, "healthy")
+
+    found = appload.accounts(apps_root, None)
+    assert [r["app"] for r in found] == ["healthy"]
+
+
+def test_a_non_dict_progress_record_is_skipped_without_taking_down_the_listing(
+        tmp_path):
+    """A progress.json record whose value is not itself a dict must not crash
+    the whole pass, and the tree's other, healthy app must still be read."""
+    from paperpull_core import appload
+
+    apps_root = tmp_path / "apps"
+    apps_root.mkdir()
+    odd = apps_root / "odd"
+    odd.mkdir()
+    (odd / "odd_docs.py").write_text("", encoding="utf-8")
+    out = odd / "out"
+    out.mkdir()
+    (odd / "config.json").write_text(
+        '{"output_dir": "%s"}' % out.as_posix(), encoding="utf-8")
+    (out / "progress.json").write_text(
+        '{"a": "not-a-dict"}', encoding="utf-8")
+    _healthy_app(apps_root, "healthy")
+
+    found = appload.accounts(apps_root, None)
+    apps = {r["app"] for r in found}
+    assert "healthy" in apps
+    # The odd account itself is still reported - it has a readable config and
+    # output_dir - just with no newest document date to show for it.
+    odd_rec = next(r for r in found if r["app"] == "odd")
+    assert odd_rec["newest_document_date"] == ""
+
+
+def test_accounts_honour_a_separate_config_root(tmp_path):
+    """PAPERPULL_CONFIG_ROOT layout: configs live at <root>/<app>/config*.json,
+    not beside the app - the layout this Docker fork actually deploys."""
+    from paperpull_core import appload
+
+    apps_root = tmp_path / "apps"
+    app_dir = apps_root / "testco"
+    app_dir.mkdir(parents=True)
+    (app_dir / "testco_docs.py").write_text("", encoding="utf-8")
+
+    config_root = tmp_path / "config"
+    cfg_dir = config_root / "testco"
+    cfg_dir.mkdir(parents=True)
+    out = tmp_path / "data" / "testco"
+    out.mkdir(parents=True)
+    (cfg_dir / "config.json").write_text(
+        '{"output_dir": "%s"}' % out.as_posix(), encoding="utf-8")
+    (out / "progress.json").write_text(
+        '{"a": {"date": "2026-07-01"}}', encoding="utf-8")
+
+    found = appload.accounts(apps_root, config_root)
+    assert len(found) == 1
+    rec = found[0]
+    assert rec["app"] == "testco"
+    assert rec["account"] == "primary"
+    assert rec["newest_document_date"] == "2026-07-01"

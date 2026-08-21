@@ -63,8 +63,13 @@ def _newest_document_date(progress_json: Path) -> str:
         data = json.loads(progress_json.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return ""
-    dates = [str((rec or {}).get("date") or "").strip()
-             for rec in (data or {}).values()]
+    if not isinstance(data, dict):
+        return ""
+    # Every record this file has ever held is a dict {"date": ...}. A record
+    # that is not - a hand-edited file, a partial write - is skipped rather
+    # than trusted, the same way an unparsable date already is below.
+    dates = [str(rec.get("date") or "").strip()
+             for rec in data.values() if isinstance(rec, dict)]
     dates = [d for d in dates if d]
     return max(dates) if dates else ""
 
@@ -106,13 +111,26 @@ def accounts(apps_root: Path, config_root: Optional[Path]) -> List[dict]:
             try:
                 cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
             except (OSError, json.JSONDecodeError):
+                print(f"appload: skipping {cfg_path} - unreadable",
+                      file=sys.stderr)
+                continue
+            if not isinstance(cfg, dict):
+                # Valid JSON, wrong shape (a list, a string, ...). This
+                # account is dropped from the list entirely, which is a real
+                # operational fact worth a line on stderr - a short listing
+                # must not look like a complete one.
+                print(f"appload: skipping {cfg_path} - not a JSON object",
+                      file=sys.stderr)
                 continue
             output_dir = Path(cfg.get("output_dir") or "")
             session = {}
             try:
-                session = (json.loads(
+                sentinel = json.loads(
                     (output_dir / "sentinel.json").read_text(encoding="utf-8"))
-                    .get("session") or {})
+                if isinstance(sentinel, dict):
+                    session = sentinel.get("session") or {}
+                if not isinstance(session, dict):
+                    session = {}
             except (OSError, json.JSONDecodeError):
                 session = {}
             last_alive = str(session.get("last_verified_alive") or "")
