@@ -84,6 +84,40 @@ def test_a_parked_account_surfaces_why_it_is_parked(fake_app):
     assert rec["identified"] is True
 
 
+def test_the_adopted_anchors_themselves_reach_the_panel(fake_app):
+    """Not just "identified: true". Adopting an identity is the one moment a
+    run takes on trust that the tab it can see is this config's account, and
+    the spec's answer to that is that the panel shows what was adopted so a
+    person can sanity-check it once - which a boolean cannot support. An
+    anchor is a document number and its date, both already in this account's
+    index CSV, so nothing new is exposed by showing them.
+    """
+    _write_config_and_sentinel(
+        fake_app,
+        session={"state": "warm"},
+        identity={"anchors": [{"id": "8412345678", "date": "2026-06-01"},
+                              {"id": "8412345679", "date": "2026-07-01"}]})
+
+    rec = _primary(panel._accounts(fake_app))
+    assert rec["identified"] is True
+    assert rec["anchors"] == [{"id": "8412345678", "date": "2026-06-01"},
+                              {"id": "8412345679", "date": "2026-07-01"}]
+
+
+def test_a_malformed_anchor_record_does_not_break_the_account_list(fake_app):
+    """A hand-edited sentinel.json, or a record from a future shape. The
+    account still has to be listed - the panel's app list is the one thing
+    that must always draw."""
+    _write_config_and_sentinel(
+        fake_app, session={"state": "warm"}, identity={"anchors": "nonsense"})
+
+    rec = _primary(panel._accounts(fake_app))
+    assert rec["anchors"] == []
+    # A non-empty string is still *something* recorded, so the account is not
+    # reported as never having been adopted.
+    assert rec["identified"] is True
+
+
 def test_an_account_with_no_adopted_identity_is_unidentified(fake_app):
     """No anchors recorded yet - e.g. a fresh sign-in nothing has verified."""
     _write_config_and_sentinel(
@@ -101,7 +135,7 @@ def test_an_account_with_no_sentinel_yet_reports_nothing_known(fake_app):
 
     rec = _primary(panel._accounts(fake_app))
     assert rec == {"name": "primary", "state": "", "last_alive": "",
-                    "parked_reason": "", "identified": False}
+                    "parked_reason": "", "identified": False, "anchors": []}
 
 
 # -- /api/due: ordering -----------------------------------------------------

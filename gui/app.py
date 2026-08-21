@@ -49,8 +49,19 @@ APPS_ROOT = Path(os.environ.get("APPS_ROOT", str(HERE.parent / "apps")))
 
 # action -> argparse flags. run_all / resume get --yes so they don't block on a
 # confirmation prompt. Login is resolved per-app (open-browser vs login).
+#
+# `adopt` is the one command that records which account a config's tab belongs
+# to, and it exists here because a human-initiated, interactive, once-per-
+# account decision is exactly what this panel is for. Without it an upgraded
+# install had no way through the identity gate at all: an app that requires
+# adopted anchors refuses Pilot, Discover, Run All and Resume until they exist,
+# and nothing in the panel could create them. It carries a real command
+# (--discover) because --adopt-identity on its own is a modifier, not an
+# action, and would only print the help.
 ACTIONS = {
     "login":    {"label": "Login",    "flags": ["__LOGIN__"]},
+    "adopt":    {"label": "Adopt identity",
+                 "flags": ["--discover", "--adopt-identity"]},
     "discover": {"label": "Discover", "flags": ["--discover"]},
     "pilot":    {"label": "Pilot",    "flags": ["--pilot"]},
     "all":      {"label": "Run All",  "flags": ["--all", "--yes"]},
@@ -246,12 +257,24 @@ def _accounts(app_dir: Path):
         sent = _sentinel_for(app_dir, name)
         session = sent.get("session") or {}
         identity_rec = sent.get("identity") or {}
+        anchors = identity_rec.get("anchors")
         out.append({
             "name": name,
             "state": session.get("state", ""),
             "last_alive": session.get("last_verified_alive", ""),
             "parked_reason": session.get("parked_reason", ""),
-            "identified": bool(identity_rec.get("anchors")),
+            "identified": bool(anchors),
+            # The anchors themselves, not just whether there are any. Adopting
+            # an identity is the one moment a run takes on trust that the tab
+            # it is reading really is this config's account, so the person who
+            # did the adopting has to be able to see WHAT was recorded and
+            # check it once - a boolean cannot be checked against anything.
+            # Nothing private: an anchor is a document number and its date,
+            # both already in this account's index CSV.
+            "anchors": [{"id": str(a.get("id", "")),
+                         "date": str(a.get("date", ""))}
+                        for a in anchors if isinstance(a, dict)]
+            if isinstance(anchors, list) else [],
         })
     return out
 
@@ -727,6 +750,7 @@ HTML = r"""<!doctype html>
     <select id="app"></select>
     <label for="account">Account</label>
     <select id="account"></select>
+    <p class="hint" id="identity"></p>
     <div class="actions" id="actions"></div>
     <button class="primary" id="sit" style="width:100%; margin-top:12px;">▶ Start sitting</button>
     <p class="hint">One sitting walks every <em>due</em> account across every
@@ -816,10 +840,33 @@ function onApp() {
     return a.name;
   };
   for (const a of m.accounts) accSel.append(new Option(accountLabel(a), a.name));
+  accSel.onchange = showIdentity;
+  showIdentity();
   const warn = $('venvwarn');
   if (!m.has_venv && META.expect_venvs) { warn.style.display='block';
     warn.textContent = '⚠ No .venv in this app yet — run setup.bat there first, or output may show import errors.'; }
   else warn.style.display='none';
+}
+// What "this account" was proved to be, spelled out. Adopting an identity is
+// the one moment a run takes on trust that the tab it can see really is this
+// config's account - so the anchors it recorded are shown once, here, for the
+// person who did the adopting to check against the invoices they can see in
+// the browser. textContent throughout: an anchor id is provider data.
+function showIdentity() {
+  const m = META.apps[$('app').value];
+  const a = (m.accounts || []).find(x => x.name === $('account').value);
+  const el = $('identity');
+  if (!a) { el.textContent = ''; return; }
+  if (!a.identified) {
+    el.textContent = '⚠ No identity recorded for this account yet. Sign in, '
+      + 'check the browser really shows THIS account, then press Adopt '
+      + 'identity once. Runs that file documents refuse until you have.';
+    return;
+  }
+  if (!a.anchors.length) { el.textContent = ''; return; }
+  el.textContent = 'Identity: this account is recognised by '
+    + a.anchors.map(x => `${x.id} (${x.date})`).join(', ')
+    + '. Check those belong to it.';
 }
 function setStatus(cls, text) { $('dot').className = 'dot ' + cls; $('statustext').textContent = text; }
 

@@ -124,6 +124,42 @@ For a second person's accounts, add a second `browser` service with its own
 offers that account immediately — it reads the directory on each request, so no
 restart is needed.
 
+### First run after upgrading: adopt each account's identity
+
+If you already had PaperPull running before this version, do this once per
+account before anything else.
+
+A run now refuses to file documents until it can prove that the tab it is
+reading really is the account its config names. One Chrome holds every
+provider's session here, and a tab is found by matching the provider's host —
+so with two accounts of the same provider signed in, a run could otherwise
+read the wrong tab and file its documents under this config's owner, silently.
+The proof is a fingerprint of documents the account is *known* to own, and on
+an existing install nothing has recorded one yet, so every action that files a
+document refuses with `Cannot tell which account this tab belongs to`.
+
+Recording it is deliberately a thing you do, watching, once:
+
+1. Sign in to the provider on the browser desktop, in **one** tab, and check
+   the page really shows the account this config is for.
+2. In the panel, pick that app and account and press **Adopt identity**.
+3. Read back what it recorded — the panel lists the anchors under the account
+   picker, and it is the one moment those are taken on trust. If they are not
+   this account's documents, you adopted the wrong tab: sign in to the right
+   account and press it again.
+
+Or from a shell, the same thing:
+
+```bash
+docker compose run --rm paperpull \
+    python apps/simyo/simyo_docs.py --discover --adopt-identity \
+    --config /config/simyo/config.json
+```
+
+It is never done for you, and never done unattended: an unattended run that
+cannot prove an identity parks the account and exits 0, so it waits for you
+rather than guessing.
+
 ### Scheduling
 
 The `scheduler` service is a third, optional container. It runs the same

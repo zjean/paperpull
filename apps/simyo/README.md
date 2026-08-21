@@ -68,6 +68,42 @@ The **running month** is skipped: it arrives as `invoiceNumber: "current"` with
 `concept: true`, Simyo's own UI hides its download button, and the PDF endpoint
 answers HTTP 500 for it.
 
+## First run after upgrading: adopt this account's identity
+
+Do this once per config, and only with your own eyes on the browser.
+
+This app refuses to file invoices until it can prove the tab it is reading
+belongs to the account the config names. The proof is a fingerprint of
+invoices this account is *known* to own — invoice numbers and their dates,
+both of which are already in the index CSV — and on an install that predates
+this check nothing has recorded one, so `--discover`, `--pilot`, `--all` and
+`--resume` all stop with:
+
+```
+!! Cannot tell which account this tab belongs to (unknown).
+```
+
+Sign in yourself, in one tab, check the page really shows this account, then:
+
+```
+python simyo_docs.py --discover --adopt-identity
+```
+
+It prints what it recorded. Read it: adoption is the one moment identity is
+taken on trust, so if those invoice numbers are not this account's, you
+adopted the wrong tab — sign in to the right one and run it again. In the
+Docker panel the same thing is the **Adopt identity** button, and the anchors
+it recorded are listed under the account picker.
+
+It is never done for you and never done unattended: a scheduled run that
+cannot prove an identity parks the account and exits 0, and waits for you.
+
+Why it exists: in the Docker layout one Chrome holds every provider's session
+and a tab is found by matching `mijn.simyo.nl`. With two Simyo accounts signed
+in, a run would otherwise read whichever tab it found and file those invoices
+under this config's `owner`, with nothing to notice — the owner comes from the
+config and never from the page.
+
 ## Setup / workflow
 
 | Step | Windows | macOS / Linux | What it does |
