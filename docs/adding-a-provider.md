@@ -107,7 +107,7 @@ e.g. "American Express" as well as "Amex" — the token substitution misses it).
 ### 2. Pick a free CDP port + set config
 
 Each app uses its own debugging port so several signed-in browsers can be open
-at once. Taken so far: **9222–9237**. Use the **next free port (9238+)** in your
+at once. Taken so far: **9222–9238**. Use the **next free port (9239+)** in your
 `config.example.json` and local `config.json`, and point `output_dir` /
 `profile_dir` at this app's folder.
 
@@ -180,14 +180,25 @@ open it. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ---
 
-## Tips (hard-won across 14 apps)
+## Tips (hard-won across 18 apps)
 
 - **Download mechanisms vary — identify yours first.** Seen so far: a real
   browser **download event** (`page.expect_download`, most common); an inline
   **blob-in-new-tab** you `fetch()` from the page context (Navy Federal); CDP
   **`Page.printToPDF`** when the receipt is a print-only page with no download
-  button (Walmart/Target); and a browser-managed download dir when attached to a
-  user-launched browser (Verizon).
+  button (Walmart/Target); a browser-managed download dir when attached to a
+  user-launched browser (Verizon); and the PDF **inline as base64 in a JSON
+  answer**, with no download event at all (Youfone).
+- **Can you call the API, or only press the button?** A JSON API behind the SPA
+  is the cleanest thing to read — until it turns out to be signed. Youfone's
+  sends a `securitykey` header its own app computes per request, and refuses
+  anything without one with a bare nginx **403**, cookies or bearer token
+  regardless. Test that early: a raw `context.request.get()` against the
+  endpoint either works (read it directly, like `simyo`/`ukg`/`usaa`) or it
+  doesn't, and then the document has no URL and you click its button and read
+  the response (`page.expect_response`, like `youfone`). Don't reimplement the
+  provider's request signing — it will rotate, and a read-only tool should not
+  be shipping someone else's crypto.
 - **Bot detection?** If the site blocks the bundled Playwright Chromium (a WAF
   page, an endless "are you human" loop), launch **real Microsoft Edge / Chrome**
   instead — see `walmart`/`verizon` `cmd_open_browser`. A branded browser passes

@@ -33,6 +33,7 @@ Seventeen providers are supported today, all built on the same pattern:
 | [`verizon`](apps/verizon) | Verizon (Fios) | Bill statements | Real Edge (bot block); dropdown + CDP download |
 | [`walmart`](apps/walmart) | Walmart | Receipts | Hardened against bot detection |
 | [`wealthfront`](apps/wealthfront) | Wealthfront | Statements, tax docs | |
+| [`youfone`](apps/youfone) | Youfone (NL) | Invoices + specifications (facturen) | Clicked, not fetched: API needs their own `securitykey` header |
 
 > ⚠️ **Read this first:** these tools drive real, signed-in financial accounts.
 > See [SECURITY.md](SECURITY.md) before you run *or* publish anything. In short:

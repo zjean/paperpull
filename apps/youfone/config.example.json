@@ -1,0 +1,21 @@
+{
+  "owner": "",
+  "owner_in_filename": false,
+  "output_dir": ".",
+  "profile_dir": "./browser-profile",
+
+  "//": "Youfone can ONLY be read through a browser you signed in to yourself,",
+  "//2": "so cdp_url is required here rather than optional: this app attaches to",
+  "//3": "that window and never opens a tab of its own. Youfone keeps the session",
+  "//4": "in the tab it was opened in, so a second tab starts signed out.",
+  "cdp_url": "http://localhost:9238",
+
+  "document_types": [
+    "Statement"
+  ],
+  "min_pdf_bytes": 2000,
+  "max_path_length": 240,
+  "delay_min_seconds": 2.5,
+  "delay_max_seconds": 5.0,
+  "pilot_count": 5
+}

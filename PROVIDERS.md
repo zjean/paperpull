@@ -10,7 +10,7 @@ telecoms, payroll systems, and retailers real people actually use.
   [provider request](https://github.com/rheeloaded/paperpull/issues/new/choose)
   so someone with that account can pick it up.
 
-## Supported (17)
+## Supported (18)
 
 | App | Provider | Documents | Category |
 |-----|----------|-----------|----------|
@@ -31,6 +31,7 @@ telecoms, payroll systems, and retailers real people actually use.
 | [`verizon`](apps/verizon) | Verizon (Fios) | Bill statements | Telecom |
 | [`walmart`](apps/walmart) | Walmart | Receipts | Retail |
 | [`wealthfront`](apps/wealthfront) | Wealthfront | Statements, tax docs | Brokerage |
+| [`youfone`](apps/youfone) | Youfone (Netherlands) | Invoices + specifications (facturen) | Telecom |
 
 ## Requested / in progress
 

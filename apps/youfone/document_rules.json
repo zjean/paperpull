@@ -1,0 +1,21 @@
+{
+  "_comment": "Editable rules mapping Youfone document titles to filename summaries. Youfone is a Dutch provider, so the titles are Dutch: 'factuur' is the invoice and 'specificatie' is the usage breakdown behind it. Each invoice row offers both, so the two summaries must stay distinct - they are what keeps one month's two PDFs from colliding on disk. The categories they map to (Statement, Tax Document) stay in the project's own vocabulary so filing matches the other apps. Youfone issues no tax forms; tax_rules is empty on purpose. Repair after running diagnose.command against your real Facturen page.",
+  "tax_rules": [],
+  "insurance_rules": [],
+  "statement_rules": [
+    {"pattern": "\\bspecificatie(s)?\\b", "summary": "Specificatie"},
+    {"pattern": "\\bfactu(ur|ren)\\b", "summary": "Factuur"},
+    {"pattern": "\\bverbruiksoverzicht\\b", "summary": "Verbruiksoverzicht"},
+    {"pattern": "\\bbetalingsoverzicht\\b", "summary": "Betalingsoverzicht"},
+    {"pattern": "\\bstatement\\b", "summary": "Account Statement"}
+  ],
+  "skip_patterns": [
+    "nieuwsbrief",
+    "privacyverklaring",
+    "privacy\\s?beleid",
+    "algemene\\s+voorwaarden",
+    "aanbieding",
+    "actievoorwaarden",
+    "reclame"
+  ]
+}
