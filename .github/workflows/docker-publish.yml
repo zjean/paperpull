@@ -68,9 +68,26 @@ jobs:
           count=$(docker run --rm paperpull:ci sh -c 'ls /config | wc -l')
           echo "seeded configs: $count"
           test "$count" -ge 16
-          docker run --rm paperpull:ci sh -c \
-            'test -L /app/apps/ally/config.json' \
-            || { echo "config was not linked into the app directory"; exit 1; }
+
+          # Seeded onto the volume, pointing at the shared browser and this
+          # app's own output folder.
+          docker run --rm paperpull:ci sh -c 'cat /config/ally/config.json'
+          docker run --rm paperpull:ci sh -c '
+            grep -q "\"cdp_url\": \"http://localhost:9222\"" /config/ally/config.json &&
+            grep -q "\"output_dir\": \"/data/ally\""        /config/ally/config.json' \
+            || { echo "seeded config does not point at the container paths"; exit 1; }
+
+          # And nothing written into any app directory — no real config, and
+          # none of the symlinks this used to create. That is what keeps them
+          # read-only, which is what lets the image run as any uid.
+          # config.example.json is tracked source and is expected to be there.
+          docker run --rm paperpull:ci sh -c '
+            test ! -e /app/apps/ally/config.json' \
+            || { echo "a config leaked into the app directory"; exit 1; }
+          links=$(docker run --rm paperpull:ci sh -c \
+            'find /app/apps -maxdepth 2 -type l -name "config*.json" | wc -l')
+          echo "config symlinks in app directories: $links"
+          test "$links" -eq 0
 
   publish:
     name: publish
