@@ -169,6 +169,28 @@ def test_config_saved_with_a_bom_still_loads(tmp_path):
     assert storage.load_config(cfg)["owner"] == "Sam"
 
 
+def _blocked_input(*_args, **_kwargs):
+    raise AssertionError("ensure_owner must not call input() when unattended")
+
+
+def test_ensure_owner_skipped_when_unattended(tmp_path, monkeypatch):
+    """A scheduled run has no human attached, so `unattended=True` alone must
+    be enough to skip the prompt - it cannot depend on stdin happening to
+    look non-interactive, because a native scheduled run started from an
+    actual terminal has a real tty. `sys.stdin` is replaced with one that
+    claims to be a tty, so the interactive branch is genuinely open and only
+    `unattended` decides whether it is taken - and `input()` is replaced with
+    something that raises, so a regression that deleted the unattended check
+    fails this test with an assertion instead of hanging the suite on a real
+    prompt."""
+    monkeypatch.setattr("builtins.input", _blocked_input)
+    monkeypatch.setattr(storage.sys, "stdin",
+                        type("FakeTTY", (), {"isatty": staticmethod(lambda: True)})())
+    config = {"owner": ""}
+    result = storage.ensure_owner(config, tmp_path / "config.json", unattended=True)
+    assert result["owner"] == ""
+
+
 def test_paths_include_the_sentinel_file(tmp_path):
     paths = storage.Paths(tmp_path / "out")
     assert paths.sentinel_json == tmp_path / "out" / "sentinel.json"

@@ -6,15 +6,18 @@ interpreter?", "which flags?") answered independently until they disagreed.
 tools/ carries no suite of its own, and testing the pair side by side is what
 makes a divergence visible.
 
-Nothing here starts a subprocess: `build_command` exists precisely so the argv
-can be asserted on without running it, and running it would reach a real
-provider.
+Nothing here starts a real subprocess: `build_command` exists precisely so
+the argv can be asserted on without running it, and running it would reach a
+real provider. The one exception is `run_one`, the function that actually
+calls `subprocess.run` - there, `subprocess.run` itself is replaced with a
+stub, so the call can be inspected without a process ever existing.
 """
 from __future__ import annotations
 
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,6 +83,33 @@ def test_a_named_account_is_passed_its_own_config(tmp_path, monkeypatch):
     cmd = schedule.build_command(_account(account="jane"), tmp_path,
                                  tmp_path / "simyo_docs.py")
     assert cmd[-2:] == ["--config", "/config/simyo/config.json"]
+
+
+def test_a_scheduled_run_cannot_inherit_a_terminal(tmp_path, monkeypatch):
+    """run_one used to call subprocess.run with no stdin argument at all,
+    which inherits this process's own stdin - a real terminal, if one is
+    what started tools/schedule.py natively. That terminal is how a prompt
+    (the app's own, or ensure_owner's isatty()-gated one in storage.py) stops
+    being unreachable and starts being able to hang a scheduled run forever.
+    Asserted on the call rather than on any prompt actually firing: a test
+    that could reach a real input() is the wrong test even if it never does,
+    because a hang here would hang the whole suite rather than fail it."""
+    monkeypatch.delenv("PAPERPULL_CONFIG_ROOT", raising=False)
+    # A fake entry script is enough: run_one only reads its text (looking for
+    # "--unattended") before ever building or running a command.
+    (tmp_path / "fake_docs.py").write_text(
+        "ap.add_argument('--unattended')\n", encoding="utf-8")
+
+    captured = {}
+
+    def fake_run(cmd, cwd=None, stdin=None):
+        captured["stdin"] = stdin
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(schedule.subprocess, "run", fake_run)
+    code = schedule.run_one(_account(app=tmp_path.name), tmp_path.parent)
+    assert code == 0
+    assert captured["stdin"] is schedule.subprocess.DEVNULL
 
 
 # -- which interpreter ------------------------------------------------------

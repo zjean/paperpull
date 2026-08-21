@@ -89,13 +89,24 @@ def set_filename_owner(name: str) -> None:
     _FILENAME_OWNER = (name or "").strip()
 
 
-def ensure_owner(config: dict, config_path) -> dict:
+def ensure_owner(config: dict, config_path, unattended: bool = False) -> dict:
     """If the account holder's name isn't set, ask once on an interactive
     console and save it back to the config, so every document this account
-    downloads is associated with that person. Skipped when non-interactive."""
+    downloads is associated with that person. Skipped when non-interactive.
+
+    `unattended` is the app's own `--unattended` flag, not something this
+    function can work out on its own: a scheduled run's stdin can be
+    DEVNULL, but it can just as easily still be a real terminal's tty (a
+    native `python3 tools/schedule.py` run started from one, before
+    tools/schedule.py stopped inheriting it), and the isatty() check below
+    would wave that through as "interactive" and block on the input() below
+    forever. Only the caller knows there is no human behind this run, so it
+    says so explicitly. Defaults to False, so every call site written before
+    this parameter existed keeps its exact previous behaviour.
+    """
     if config.get("owner"):
         return config
-    if not sys.stdin or not sys.stdin.isatty():
+    if unattended or not sys.stdin or not sys.stdin.isatty():
         return config
     try:
         name = input("Whose account is this? Enter the account holder's name: ").strip()

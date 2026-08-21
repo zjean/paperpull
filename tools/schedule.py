@@ -101,7 +101,16 @@ def run_one(account: dict, apps_root: Path) -> int:
         return 0
     cmd = build_command(account, app_dir, script)
     print(f"  $ {' '.join(cmd)}")
-    proc = subprocess.run(cmd, cwd=str(app_dir))
+    # stdin=DEVNULL, not inherited. A scheduled run has no human attached by
+    # definition, so this process's own terminal - if it has one - must never
+    # reach the child. An inherited tty is exactly how a prompt becomes
+    # answerable: --unattended is supposed to make every prompt unreachable,
+    # but that guard lives inside the app, one layer below this call, and a
+    # second, independent prompt (ensure_owner's, gated on isatty() alone -
+    # see storage.py) sits underneath it too. Closing stdin here means a
+    # scheduled run can never block on either one, regardless of what runs
+    # inside the app today or is added to it tomorrow.
+    proc = subprocess.run(cmd, cwd=str(app_dir), stdin=subprocess.DEVNULL)
     return proc.returncode
 
 

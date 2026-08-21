@@ -217,7 +217,12 @@ class App:
         cfg_path = Path(args.config) if getattr(args, "config", None) \
             else (PROJECT_DIR / "config.json")
         self.config = load_config(cfg_path)
-        ensure_owner(self.config, cfg_path)
+        # unattended=...: this is the only app that can reach here with no
+        # human attached (see main()'s --unattended guard above _dispatch),
+        # so it is the only call site that has anything to tell ensure_owner
+        # beyond its own two-argument default.
+        ensure_owner(self.config, cfg_path,
+                     unattended=getattr(args, "unattended", False))
         set_filename_owner(self.config.get("owner", "") if self.config.get("owner_in_filename") else "")
         self.paths = Paths(Path(self.config["output_dir"]))
         self.paths.ensure()
