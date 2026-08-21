@@ -163,17 +163,52 @@ def _config_dir(app_dir: Path) -> Path:
     return (root / app_dir.name) if root else app_dir
 
 
-def _accounts(app_dir: Path):
-    accts = ["primary"]
+def _account_names(app_dir: Path):
+    """Just the labels: 'primary' plus every config.<name>.json."""
+    names = ["primary"]
     cfg_dir = _config_dir(app_dir)
     if not cfg_dir.is_dir():
-        return accts
+        return names
     for cfg in sorted(cfg_dir.glob("config.*.json")):
         if cfg.name == "config.example.json":
             continue
-        name = cfg.name[len("config."):-len(".json")]
-        accts.append(name)
-    return accts
+        names.append(cfg.name[len("config."):-len(".json")])
+    return names
+
+
+def _sentinel_for(app_dir: Path, account: str) -> dict:
+    """This account's sentinel record, or {} if there is none yet.
+
+    Read as plain JSON on purpose: the panel drives the apps as subprocesses
+    and must not import their code or the core, so that it still runs from
+    gui/requirements.txt alone on a native install.
+    """
+    name = "config.json" if account == "primary" else f"config.{account}.json"
+    cfg_path = _config_dir(app_dir) / name
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+        raw = (Path(cfg["output_dir"]) / "sentinel.json").read_text(encoding="utf-8")
+        return json.loads(raw)
+    except Exception:
+        # No config, no output dir yet, no sentinel, or unreadable: all of
+        # which mean "nothing known", never an error the panel should show.
+        return {}
+
+
+def _accounts(app_dir: Path):
+    out = []
+    for name in _account_names(app_dir):
+        sent = _sentinel_for(app_dir, name)
+        session = sent.get("session") or {}
+        identity_rec = sent.get("identity") or {}
+        out.append({
+            "name": name,
+            "state": session.get("state", ""),
+            "last_alive": session.get("last_verified_alive", ""),
+            "parked_reason": session.get("parked_reason", ""),
+            "identified": bool(identity_rec.get("anchors")),
+        })
+    return out
 
 
 def discover_apps():
@@ -217,7 +252,7 @@ def api_apps():
 def _build_cmd(app_meta: dict, account: str, action: str):
     if action not in ACTIONS:
         raise HTTPException(400, "unknown action")
-    if account not in app_meta["accounts"]:
+    if account not in [a["name"] for a in app_meta["accounts"]]:
         raise HTTPException(400, "unknown account")
     flags = []
     for f in ACTIONS[action]["flags"]:
@@ -603,7 +638,13 @@ async function load() {
 function onApp() {
   const m = META.apps[$('app').value];
   const accSel = $('account'); accSel.innerHTML = '';
-  for (const a of m.accounts) accSel.append(new Option(a, a));
+  const accountLabel = (a) => {
+    if (!a.identified) return a.name + ' · unidentified';
+    if (a.state === 'parked') return a.name + ' · needs sign-in';
+    if (a.state === 'warm') return a.name + ' · alive ' + (a.last_alive || '').slice(0, 16);
+    return a.name;
+  };
+  for (const a of m.accounts) accSel.append(new Option(accountLabel(a), a.name));
   const warn = $('venvwarn');
   if (!m.has_venv && META.expect_venvs) { warn.style.display='block';
     warn.textContent = '⚠ No .venv in this app yet — run setup.bat there first, or output may show import errors.'; }
