@@ -90,6 +90,12 @@ class AppSpec:
     # nothing else about the two paths differs.
     session_lifetime_minutes: Optional[int] = None
 
+    # How many of this provider's sessions may be live at once, across every
+    # account. One is not a conservative default, it is Simyo's actual rule:
+    # a second Mijn Simyo tab signs the first one out, server-side. Providers
+    # that genuinely tolerate parallel sessions can raise it.
+    concurrency: int = 1
+
     def __post_init__(self):
         self.project_dir = Path(self.project_dir)
         if self.kind not in (RECEIPT, DOCUMENT):
@@ -109,6 +115,8 @@ class AppSpec:
                 int(self.session_lifetime_minutes) < 1:
             raise ValueError(
                 "AppSpec.session_lifetime_minutes must be None or at least 1")
+        if int(self.concurrency) < 1:
+            raise ValueError("AppSpec.concurrency must be at least 1")
 
     @property
     def slug(self) -> str:

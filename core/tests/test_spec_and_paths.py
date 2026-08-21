@@ -193,3 +193,14 @@ def test_a_nonsense_session_lifetime_is_refused(tmp_path):
                 folders=[Folder("statements", "Statements")],
                 routes={"Statement": "statements"},
                 session_lifetime_minutes=0)
+
+
+def test_concurrency_defaults_to_one(tmp_path):
+    assert document_spec(tmp_path).concurrency == 1
+
+
+def test_a_nonsense_concurrency_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="concurrency"):
+        AppSpec(provider="Simyo", project_dir=tmp_path, kind=DOCUMENT,
+                folders=[Folder("statements", "Statements")],
+                routes={"Statement": "statements"}, concurrency=0)
