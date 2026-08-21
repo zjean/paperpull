@@ -74,12 +74,12 @@ from paperpull_core.storage import (  # noqa: E402  (must follow bind)
     backup_file, build_pdf_filename, ensure_owner, load_config, now_iso,
     sanitize_component, set_filename_owner, title_case, unique_path,
 )
-from paperpull_core import identity, sentinel  # noqa: E402
+from paperpull_core import identity, locks, sentinel  # noqa: E402
 
 __all__ = [
     "SPEC", "PROJECT_DIR", "DOCUMENT_INDEX_COLUMNS",
     "CsvFile", "JsonStore", "Paths", "atomic_write_json", "atomic_write_text",
     "backup_file", "build_pdf_filename", "ensure_owner", "load_config",
     "now_iso", "sanitize_component", "set_filename_owner", "title_case",
-    "unique_path", "identity", "sentinel",
+    "unique_path", "identity", "locks", "sentinel",
 ]

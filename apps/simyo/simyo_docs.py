@@ -45,8 +45,8 @@ from storage import (CsvFile, DOCUMENT_INDEX_COLUMNS, JsonStore, Paths,
                      atomic_write_text, build_pdf_filename, load_config,
                      now_iso, sanitize_component, unique_path)
 
-from storage import ensure_owner, PROJECT_DIR, set_filename_owner
-from storage import identity, sentinel
+from storage import ensure_owner, PROJECT_DIR, SPEC, set_filename_owner
+from storage import identity, locks, sentinel
 log = logging.getLogger("simyo_docs")
 
 DONE_STATES = {State.COMPLETED.value, State.NO_RECEIPT_AVAILABLE.value}
@@ -936,6 +936,37 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _dispatch(app: "App", args) -> int:
+    """Run the one command argparse picked out, and nothing else.
+
+    Split out of main() so the lock in main() can wrap this call without
+    also wrapping the --unattended guard (which must run before App(args)
+    exists at all) or the cleanup in main()'s `finally` (which must run
+    whether or not the lock was ever taken).
+    """
+    if getattr(args, "open_browser", False):
+        app.cmd_open_browser()
+    elif args.login:
+        app.cmd_login()
+    elif args.discover:
+        app.cmd_discover()
+    elif args.pilot:
+        app.cmd_pilot()
+    elif args.all:
+        app.cmd_run("all")
+    elif args.resume:
+        app.cmd_resume()
+    elif args.verify:
+        app.cmd_verify()
+    elif args.diagnose:
+        app.cmd_diagnose()
+    elif args.dry_run:
+        app.cmd_run("dry-run")
+    else:
+        build_parser().print_help()
+    return 0
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     for d in (args.start_date, args.end_date):
@@ -947,6 +978,12 @@ def main(argv=None):
         # --all asks for confirmation, --adopt-identity is the one moment
         # identity is taken on trust, and --open-browser is a human sitting
         # down. Refusing here beats hanging in a container at 3am.
+        #
+        # This check runs before App(args) below, on purpose: it needs no
+        # config, no sentinel and no browser, so a malformed unattended
+        # invocation is refused in milliseconds rather than after a config
+        # load that might itself fail. test_unattended.py depends on that
+        # ordering.
         if not (args.discover or args.resume or args.verify):
             print("--unattended works with --discover, --resume or --verify only.")
             return 2
@@ -954,28 +991,31 @@ def main(argv=None):
             print("--adopt-identity is never done unattended.")
             return 2
     app = App(args)
+    # The slot this takes is per PROVIDER, not per account: Simyo signs the
+    # older session out, server-side, the moment a second one appears, so two
+    # accounts of this provider can never be pulled at the same moment. The
+    # default directory is one level above this account's own output_dir -
+    # the one place every account of one provider is guaranteed to share,
+    # since each account's output_dir differs but sits beside the others'.
+    lock_dir = Path(app.config.get("lock_dir") or
+                    (Path(app.config["output_dir"]).parent / ".locks"))
+    # --verify only re-reads PDFs already saved on disk, and --open-browser is
+    # a human sitting down to sign in - neither one touches the shared,
+    # single-session browser tab this lock protects, so neither should have
+    # to queue behind it (or be blocked by a run that is genuinely using it).
+    needs_browser = not (args.verify or getattr(args, "open_browser", False))
+    # Whoever ends up refused sees this: which config - and so which account -
+    # is holding the slot. No secret, just the file the other run was told
+    # to use.
+    holder = args.config or "config.json"
     try:
-        if getattr(args, "open_browser", False):
-            app.cmd_open_browser()
-        elif args.login:
-            app.cmd_login()
-        elif args.discover:
-            app.cmd_discover()
-        elif args.pilot:
-            app.cmd_pilot()
-        elif args.all:
-            app.cmd_run("all")
-        elif args.resume:
-            app.cmd_resume()
-        elif args.verify:
-            app.cmd_verify()
-        elif args.diagnose:
-            app.cmd_diagnose()
-        elif args.dry_run:
-            app.cmd_run("dry-run")
-        else:
-            build_parser().print_help()
-            return 0
+        if needs_browser:
+            with locks.hold(lock_dir, SPEC.slug, SPEC.concurrency, holder):
+                return _dispatch(app, args)
+        return _dispatch(app, args)
+    except locks.ProviderBusy as e:
+        print(f"\n!! {e}")
+        return 4
     except Parked as e:
         print(f"\nParked: {e}. This account needs a sign-in; nothing was run.")
         return 0

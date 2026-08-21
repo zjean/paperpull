@@ -281,6 +281,58 @@ def _build_cmd(app_meta: dict, account: str, action: str):
     return cmd
 
 
+def _busy_holder(app_dir: Path, account: str):
+    """Who holds this provider's session slot right now, if anyone.
+
+    Guarded: gui/requirements.txt is the only thing a native install
+    promises to have installed, and paperpull_core lives in a sibling
+    directory the panel does not otherwise import from. If it can't be
+    loaded - not installed, mid-upgrade, whatever - this degrades to
+    "cannot tell" (None) rather than breaking the Run button for every app
+    over one provider's lock code.
+    """
+    try:
+        sys.path.insert(0, str(HERE.parent / "core"))
+        from paperpull_core import appload, locks
+    except Exception:
+        return None
+    try:
+        spec = appload.load_spec(app_dir)
+        name = "config.json" if account == "primary" else f"config.{account}.json"
+        cfg_path = _config_dir(app_dir) / name
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+        out_dir = Path(cfg["output_dir"])
+        if not out_dir.is_absolute():
+            # Mirrors _sentinel_for above: config.example.json ships
+            # "output_dir": "." which only means something once resolved
+            # against the app's own directory - the downloader subprocess's
+            # cwd (see the Popen call in api_run) - and not against this
+            # long-running panel process's own cwd, which is wherever
+            # uvicorn happened to start.
+            out_dir = app_dir / out_dir
+        # This MUST land on the same directory simyo_docs.py's main() computes
+        # for the same config, or the panel and the CLI would each be
+        # guarding a different, invisible-to-the-other .locks directory and
+        # never actually contend for the same slot - the one failure mode
+        # that would make this whole feature silently do nothing. An explicit
+        # "lock_dir" in the config wins on both sides; otherwise both land on
+        # one level above output_dir, resolved the same way relative paths
+        # are resolved above.
+        raw_lock_dir = cfg.get("lock_dir")
+        if raw_lock_dir:
+            lock_dir = Path(raw_lock_dir)
+            if not lock_dir.is_absolute():
+                lock_dir = app_dir / lock_dir
+        else:
+            lock_dir = out_dir.parent / ".locks"
+        held = locks.holders(lock_dir, spec.slug, spec.concurrency)
+        if len(held) >= spec.concurrency and held:
+            return held[0].get("holder") or "another run"
+    except Exception:
+        return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Answering a prompt
 # ---------------------------------------------------------------------------
@@ -413,6 +465,16 @@ def api_run(app: str, account: str = "primary", action: str = "pilot"):
     if app not in apps:
         raise HTTPException(404, "unknown app")
     meta = apps[app]
+    # Refuse before ever building a command: starting a second Popen for a
+    # provider that only tolerates one signed-in session would sign the
+    # first one out from under whichever run got there first - the same
+    # contract simyo_docs.py's own main() enforces on the CLI side, checked
+    # here too because a panel restart is exactly the case a file-backed
+    # lock (rather than the in-memory _RUNS dict below) exists to catch.
+    busy = _busy_holder(Path(meta["dir"]), account)
+    if busy:
+        raise HTTPException(409, f"{app} is already running as {busy}. "
+                                 f"This provider allows one session at a time.")
     cmd = _build_cmd(meta, account, action)
 
     # Deliberately an *async* generator. With a plain sync one, Starlette wraps
