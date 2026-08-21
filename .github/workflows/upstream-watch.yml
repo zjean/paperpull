@@ -1,0 +1,93 @@
+# Watch rheeloaded/paperpull for work worth pulling down.
+#
+# This is a fork that adds Docker. It keeps that divergence deliberately small
+# — provider fixes and core changes should merge cleanly — so the useful signal
+# is not "upstream moved" but "upstream moved in a file we also changed".
+#
+# The set of diverged files is computed, never hand-maintained: a list in a
+# file goes stale the first time someone forgets it.
+name: upstream watch
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  UPSTREAM: https://github.com/rheeloaded/paperpull.git
+  UPSTREAM_BRANCH: main
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM" 2>/dev/null || true
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+
+      - name: What is new, and does it touch anything we changed?
+        id: scan
+        run: |
+          base=$(git merge-base HEAD "upstream/${UPSTREAM_BRANCH}")
+          new=$(git rev-list --count "${base}..upstream/${UPSTREAM_BRANCH}")
+          echo "new_commits=${new}" >> "$GITHUB_OUTPUT"
+
+          if [ "$new" = "0" ]; then
+            echo "Up to date with upstream."
+            exit 0
+          fi
+
+          # Files this fork has changed since the common ancestor...
+          git diff --name-only "${base}..HEAD" | sort -u > ours.txt
+          # ...and files upstream has changed since it.
+          git diff --name-only "${base}..upstream/${UPSTREAM_BRANCH}" | sort -u > theirs.txt
+          comm -12 ours.txt theirs.txt > overlap.txt
+
+          echo "overlap=$(wc -l < overlap.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "**${new}** new upstream commit(s) on \`${UPSTREAM_BRANCH}\`."
+            echo
+            if [ -s overlap.txt ]; then
+              echo "⚠️ These files changed on **both** sides, so the merge will need a decision:"
+              echo
+              while read -r f; do echo "- \`${f}\`"; done < overlap.txt
+              echo
+            else
+              echo "✅ No file changed on both sides — this should merge cleanly."
+              echo
+            fi
+            echo "<details><summary>Upstream commits</summary>"
+            echo
+            git log --no-merges --pretty='- %h %s' "${base}..upstream/${UPSTREAM_BRANCH}" | head -50
+            echo
+            echo "</details>"
+            echo
+            echo "To merge: run the \`merge-upstream\` skill in Claude Code, or see \`docs/upstream.md\`."
+          } > body.md
+
+      - name: Open or update the tracking issue
+        if: steps.scan.outputs.new_commits != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="Upstream has ${{ steps.scan.outputs.new_commits }} new commit(s)"
+          existing=$(gh issue list --label upstream --state open \
+                       --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body-file body.md
+            echo "updated issue #${existing}"
+          else
+            gh label create upstream --color ededed \
+              --description "Changes waiting to be merged from rheeloaded/paperpull" 2>/dev/null || true
+            gh issue create --title "$title" --body-file body.md --label upstream
+          fi

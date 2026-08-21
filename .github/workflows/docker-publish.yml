@@ -1,0 +1,122 @@
+# Build and publish the paperpull image to GHCR.
+#
+#   push to develop  ->  :beta
+#   push to main     ->  :latest  and  :<VERSION>
+#   any push         ->  :sha-<short>   (so a bad :latest can be pinned back)
+#
+# Tests run first and gate the publish. They are the fast ones — the container
+# stack's own smoke test needs a 4.5GB browser image, so it lives in
+# docker-smoke.yml and runs on a schedule instead of on every push.
+name: docker
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - ".github/ISSUE_TEMPLATE/**"
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image for this runner
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: paperpull:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Both suites run inside the image, against the interpreter and the
+      # installed paperpull-core the container will actually use.
+      - name: Shared core
+        run: docker run --rm paperpull:ci python -m pytest core/tests -q -p no:cacheprovider
+
+      - name: Control panel
+        run: docker run --rm paperpull:ci python -m pytest gui/tests -q -p no:cacheprovider
+
+      # The entrypoint has to give all sixteen apps a config before the panel
+      # can drive any of them, and it is plain shell with no tests of its own.
+      - name: Entrypoint seeds every app's config
+        run: |
+          count=$(docker run --rm paperpull:ci sh -c 'ls /config | wc -l')
+          echo "seeded configs: $count"
+          test "$count" -ge 16
+          docker run --rm paperpull:ci sh -c \
+            'test -L /app/apps/ally/config.json' \
+            || { echo "config was not linked into the app directory"; exit 1; }
+
+  publish:
+    name: publish
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read VERSION
+        id: version
+        run: echo "value=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      # arm64 is built under emulation. It is the slow step; the gha cache is
+      # what keeps it tolerable.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          tags: |
+            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ steps.version.outputs.value }},enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.title=PaperPull
+            org.opencontainers.image.description=Receipt and statement downloader — control panel and apps
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,151 @@
+"""The two switches that let the panel run in a container.
+
+Natively, the panel serves localhost and launches the sign-in browser itself.
+In Docker it is reached through a reverse proxy and the browser lives in
+another container, so two things have to change - and neither may change
+anything for a native install. That is what these tests pin down.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import app as panel  # noqa: E402
+
+
+class FakeRequest:
+    """Just enough Request for _same_origin_only: a headers mapping."""
+
+    def __init__(self, **headers):
+        self.headers = {k.lower(): v for k, v in headers.items()}
+
+
+# -- the origin guard ------------------------------------------------------
+
+
+def test_localhost_origins_allowed_with_no_env(monkeypatch):
+    monkeypatch.delenv("PAPERPULL_ALLOWED_HOSTS", raising=False)
+    for origin in ("http://127.0.0.1:8765", "http://localhost:8765", "http://[::1]:8765"):
+        panel._same_origin_only(FakeRequest(origin=origin))
+
+
+def test_no_origin_header_allowed(monkeypatch):
+    """A same-origin GET may carry neither header; that must stay allowed."""
+    monkeypatch.delenv("PAPERPULL_ALLOWED_HOSTS", raising=False)
+    panel._same_origin_only(FakeRequest())
+
+
+def test_foreign_origin_refused_by_default(monkeypatch):
+    monkeypatch.delenv("PAPERPULL_ALLOWED_HOSTS", raising=False)
+    with pytest.raises(HTTPException) as e:
+        panel._same_origin_only(FakeRequest(origin="https://evil.example"))
+    assert e.value.status_code == 403
+
+
+def test_proxied_host_allowed_when_listed(monkeypatch):
+    monkeypatch.setenv("PAPERPULL_ALLOWED_HOSTS", "paperpull.example.com")
+    panel._same_origin_only(FakeRequest(origin="https://paperpull.example.com"))
+
+
+def test_allowlist_is_case_insensitive_and_trims(monkeypatch):
+    monkeypatch.setenv("PAPERPULL_ALLOWED_HOSTS", "  PaperPull.Example.COM , other.test ")
+    panel._same_origin_only(FakeRequest(referer="https://paperpull.example.com/"))
+    panel._same_origin_only(FakeRequest(referer="https://other.test/"))
+
+
+def test_allowlist_does_not_admit_unlisted_hosts(monkeypatch):
+    """Adding one proxy host must not open the door to every host."""
+    monkeypatch.setenv("PAPERPULL_ALLOWED_HOSTS", "paperpull.example.com")
+    with pytest.raises(HTTPException):
+        panel._same_origin_only(FakeRequest(origin="https://evil.example"))
+
+
+def test_allowlist_does_not_match_a_suffix(monkeypatch):
+    """`evil-paperpull.example.com.attacker.net` is not `paperpull.example.com`."""
+    monkeypatch.setenv("PAPERPULL_ALLOWED_HOSTS", "paperpull.example.com")
+    with pytest.raises(HTTPException):
+        panel._same_origin_only(
+            FakeRequest(origin="https://paperpull.example.com.attacker.net"))
+
+
+def test_referer_is_checked_too(monkeypatch):
+    monkeypatch.delenv("PAPERPULL_ALLOWED_HOSTS", raising=False)
+    with pytest.raises(HTTPException):
+        panel._same_origin_only(FakeRequest(referer="https://evil.example/x"))
+
+
+# -- the login action -----------------------------------------------------
+
+
+@pytest.fixture()
+def script_supporting_open_browser(tmp_path):
+    """An entry script that offers --open-browser, as every app's does."""
+    p = tmp_path / "ally_docs.py"
+    p.write_text('ap.add_argument("--open-browser", action="store_true")\n',
+                 encoding="utf-8")
+    return p
+
+
+def test_native_login_prefers_open_browser(monkeypatch, script_supporting_open_browser):
+    """Unchanged behaviour: natively the panel opens the sign-in window."""
+    monkeypatch.delenv("PAPERPULL_REMOTE_BROWSER", raising=False)
+    assert panel._login_flag(script_supporting_open_browser) == "--open-browser"
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+def test_remote_login_checks_the_connection_instead(
+        monkeypatch, script_supporting_open_browser, value):
+    """With the browser in another container there is nothing to launch, so
+    Login means "am I attached and signed in?" - which is what --login does."""
+    monkeypatch.setenv("PAPERPULL_REMOTE_BROWSER", value)
+    assert panel._login_flag(script_supporting_open_browser) == "--login"
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
+def test_falsey_values_leave_native_behaviour(
+        monkeypatch, script_supporting_open_browser, value):
+    monkeypatch.setenv("PAPERPULL_REMOTE_BROWSER", value)
+    assert panel._login_flag(script_supporting_open_browser) == "--open-browser"
+
+
+def test_script_without_open_browser_still_falls_back(monkeypatch, tmp_path):
+    monkeypatch.delenv("PAPERPULL_REMOTE_BROWSER", raising=False)
+    p = tmp_path / "x_docs.py"
+    p.write_text("nothing here\n", encoding="utf-8")
+    assert panel._login_flag(p) == "--login"
+
+
+# -- what the page is told ------------------------------------------------
+
+
+def test_api_apps_reports_no_remote_browser_by_default(monkeypatch):
+    monkeypatch.delenv("PAPERPULL_REMOTE_BROWSER", raising=False)
+    monkeypatch.delenv("PAPERPULL_BROWSER_URL", raising=False)
+    payload = panel.api_apps()
+    assert payload["remote_browser"] is False
+    assert payload["browser_url"] == ""
+
+
+def test_api_apps_passes_the_desktop_link_through(monkeypatch):
+    monkeypatch.setenv("PAPERPULL_REMOTE_BROWSER", "1")
+    monkeypatch.setenv("PAPERPULL_BROWSER_URL", "https://browser.example.com/")
+    payload = panel.api_apps()
+    assert payload["remote_browser"] is True
+    assert payload["browser_url"] == "https://browser.example.com/"
+
+
+def test_remote_browser_hides_the_missing_venv_warning(monkeypatch):
+    """In the image every app runs on the one interpreter, so there is no
+    per-app .venv and the panel must not warn about its absence."""
+    monkeypatch.setenv("PAPERPULL_REMOTE_BROWSER", "1")
+    assert panel.api_apps()["expect_venvs"] is False
+
+
+def test_native_still_expects_venvs(monkeypatch):
+    monkeypatch.delenv("PAPERPULL_REMOTE_BROWSER", raising=False)
+    assert panel.api_apps()["expect_venvs"] is True

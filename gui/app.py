@@ -65,13 +65,28 @@ app = FastAPI(title="PaperPull")
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]", ""}
 
 
+def _allowed_hosts() -> set:
+    """Hosts the panel page may be served from.
+
+    Localhost always counts, which is the whole story for a native install.
+    Behind a reverse proxy the page arrives from a real hostname instead, and
+    the check above would refuse every request from it - so that hostname has
+    to be named explicitly in PAPERPULL_ALLOWED_HOSTS (comma-separated).
+    Exact matches only: a suffix rule would admit
+    paperpull.example.com.attacker.net.
+    """
+    extra = os.environ.get("PAPERPULL_ALLOWED_HOSTS", "")
+    return _LOCAL_HOSTS | {h.strip().lower() for h in extra.split(",") if h.strip()}
+
+
 def _same_origin_only(request: Request) -> None:
+    allowed = _allowed_hosts()
     for header in ("origin", "referer"):
         value = request.headers.get(header)
         if not value:
             continue
         host = (urlsplit(value).hostname or "").lower()
-        if host not in _LOCAL_HOSTS:
+        if host not in allowed:
             raise HTTPException(403, "cross-origin request refused")
 
 
@@ -99,7 +114,25 @@ def _python_for(app_dir: Path) -> str:
     return str(venv) if venv else sys.executable
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _remote_browser() -> bool:
+    """Is the sign-in browser in another container?
+
+    Set by the image. It changes exactly two things: what Login does, and
+    whether a missing per-app .venv is worth warning about.
+    """
+    return os.environ.get("PAPERPULL_REMOTE_BROWSER", "").strip().lower() in _TRUTHY
+
+
 def _login_flag(script: Path) -> str:
+    # With a remote browser there is nothing for us to launch: it is already
+    # running, and the user signs in on its own desktop. So Login means what
+    # --login has always meant - attach over CDP, open the provider's page in
+    # that browser, and report whether the session is signed in.
+    if _remote_browser():
+        return "--login"
     try:
         text = script.read_text(encoding="utf-8", errors="ignore")
     except Exception:
@@ -142,8 +175,17 @@ def discover_apps():
 @app.get("/api/apps", dependencies=[Depends(_same_origin_only)])
 def api_apps():
     apps = discover_apps()
-    return {"apps_root": str(APPS_ROOT), "actions": {k: v["label"] for k, v in ACTIONS.items()},
-            "apps": apps}
+    remote = _remote_browser()
+    return {"apps_root": str(APPS_ROOT),
+            "actions": {k: v["label"] for k, v in ACTIONS.items()},
+            "apps": apps,
+            "remote_browser": remote,
+            # Where the user signs in, when that is a browser they reach over
+            # the network rather than a window that just opened on their desk.
+            "browser_url": os.environ.get("PAPERPULL_BROWSER_URL", "").strip(),
+            # In the image every app runs on the one interpreter, so a missing
+            # per-app .venv is normal and must not be reported as a problem.
+            "expect_venvs": not remote}
 
 
 def _build_cmd(app_meta: dict, account: str, action: str):
@@ -267,6 +309,10 @@ HTML = r"""<!doctype html>
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; grid-column:1/3; }
   button:disabled { opacity:.5; cursor:not-allowed; }
   .hint { font-size:12px; color:var(--muted); margin-top:16px; }
+  a.desktop { display:none; margin-top:14px; padding:10px; text-align:center;
+              border:1px solid var(--accent); border-radius:8px; color:var(--accent);
+              text-decoration:none; font-size:14px; }
+  a.desktop:hover { background:var(--panel); }
   .warn { color:#ffcf6b; }
   .console { background:#0b0d11; margin:0; padding:16px 20px; overflow:auto;
              font:13px/1.55 ui-monospace,Consolas,monospace; white-space:pre-wrap; }
@@ -289,7 +335,8 @@ HTML = r"""<!doctype html>
     <label for="account">Account</label>
     <select id="account"></select>
     <div class="actions" id="actions"></div>
-    <p class="hint">1. <b>Login</b> opens a browser — sign in yourself and leave it open.<br>
+    <a class="desktop" id="desktop" target="_blank" rel="noopener">🖥 Open browser desktop ↗</a>
+    <p class="hint" id="steps">1. <b>Login</b> opens a browser — sign in yourself and leave it open.<br>
        2. <b>Pilot</b> tests the newest few.<br>
        3. <b>Run All</b> downloads everything you don't already have.</p>
     <p class="hint" style="border-left:3px solid var(--accent); padding-left:10px;">
@@ -320,6 +367,15 @@ async function load() {
   if (!keys.length) { $('console').textContent = 'No apps found under ' + META.apps_root + '.\nSet APPS_ROOT to your downloaders folder.'; return; }
   for (const k of keys) appSel.append(new Option(META.apps[k].name, k));
   appSel.onchange = onApp;
+  if (META.remote_browser) {
+    // The browser is not on this machine, so Login cannot open a window here.
+    // It attaches to the shared browser and reports whether you are signed in.
+    $('steps').innerHTML =
+      '1. Sign in on the <b>browser desktop</b>, and leave the tab open there.<br>' +
+      '2. <b>Login</b> checks that PaperPull can see that signed-in session.<br>' +
+      '3. <b>Pilot</b> tests the newest few, then <b>Run All</b>.';
+    if (META.browser_url) { const d = $('desktop'); d.href = META.browser_url; d.style.display = 'block'; }
+  }
   const acts = $('actions'); acts.innerHTML = '';
   for (const [k, label] of Object.entries(META.actions)) {
     const b = document.createElement('button');
@@ -334,7 +390,7 @@ function onApp() {
   const accSel = $('account'); accSel.innerHTML = '';
   for (const a of m.accounts) accSel.append(new Option(a, a));
   const warn = $('venvwarn');
-  if (!m.has_venv) { warn.style.display='block';
+  if (!m.has_venv && META.expect_venvs) { warn.style.display='block';
     warn.textContent = '⚠ No .venv in this app yet — run setup.bat there first, or output may show import errors.'; }
   else warn.style.display='none';
 }

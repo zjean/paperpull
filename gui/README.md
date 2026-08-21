@@ -36,6 +36,27 @@ python -m venv .venv && .venv\Scripts\activate && pip install -r requirements.tx
 python -m uvicorn app:app --port 8765
 ```
 
+## In Docker
+
+The panel is the web UI of the container stack — see
+[docs/docker.md](../docs/docker.md). Two environment variables change how it
+behaves there, and both default to the native behaviour above:
+
+| Variable | Effect |
+|---|---|
+| `PAPERPULL_ALLOWED_HOSTS` | Extra hostnames the page may be served from, comma-separated. Behind a reverse proxy this is required: without it every request from your panel's hostname is refused as cross-origin. Exact matches; localhost is always allowed. |
+| `PAPERPULL_REMOTE_BROWSER` | The sign-in browser is in another container. **Login** then means "attach and report whether I'm signed in" (`--login`) rather than "open a window" (`--open-browser`) — there is no display here to open one on. Also stops the panel warning about missing per-app `.venv`s, since the image runs every app on one interpreter. |
+| `PAPERPULL_BROWSER_URL` | Public URL of the browser desktop. Adds an "Open browser desktop" link to the panel. Cosmetic. |
+
+## Tests
+
+```bash
+python -m pytest tests -q
+```
+
+`tests/test_remote_browser.py` covers both switches, in both directions — it
+fails if the Docker behaviour breaks *or* if native behaviour changes.
+
 ## Which apps does it drive?
 
 By default it discovers the apps in `../apps`. To drive your **existing working

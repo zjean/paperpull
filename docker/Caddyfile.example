@@ -1,0 +1,32 @@
+# PaperPull behind Caddy. Add these two blocks to your Caddyfile, or import
+# this file from it. Caddy must share the `proxy` network with the containers.
+
+# --- the control panel ---------------------------------------------------
+paperpull.example.com {
+	# The panel streams a run's output as server-sent events. Caddy buffers
+	# responses by default, which turns that live output into one silent wait
+	# and then everything at once. flush_interval -1 disables the buffering.
+	reverse_proxy paperpull:8765 {
+		flush_interval -1
+	}
+
+	# The panel has no login of its own. It can start a downloader against
+	# your signed-in accounts, so put one in front of it.
+	# Generate the hash with:  caddy hash-password
+	basic_auth {
+		you $2a$14$REPLACE_WITH_YOUR_OWN_HASH
+	}
+}
+
+# --- the browser desktop -------------------------------------------------
+browser.example.com {
+	# Selkies serves plain HTTP on 3000 (3001 is the same thing behind a
+	# self-signed cert, which only gets in Caddy's way). It has its own login
+	# from BROWSER_USER / BROWSER_PASSWORD.
+	#
+	# Caddy proxies the websockets this needs without extra configuration.
+	# The desktop is latency-sensitive, so no buffering here either.
+	reverse_proxy browser:3000 {
+		flush_interval -1
+	}
+}

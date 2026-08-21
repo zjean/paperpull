@@ -120,7 +120,42 @@ account with its own profile, port and output folders, so no data mixes. The
 launchers take the account label as an argument (`login.bat spouse` /
 `./login.command spouse`).
 
-## Quick start
+## Run it in Docker
+
+**This fork's supported path.** The control panel becomes a web UI you reach
+from any device, and the sign-in browser becomes a real Google Chrome with a
+web desktop in its own container. You still sign in yourself; PaperPull still
+attaches afterwards over the DevTools protocol and never sees a password.
+
+```bash
+cp .env.example .env         # set BROWSER_PASSWORD and PAPERPULL_ALLOWED_HOSTS
+docker network create proxy  # if your reverse proxy doesn't have one
+docker compose up -d
+```
+
+Then add the two blocks from [`docker/Caddyfile.example`](docker/Caddyfile.example)
+to your Caddyfile, sign in to a provider on the browser desktop, and drive it
+from the panel. Full setup, the four Chrome/Playwright gotchas the design works
+around, and how to verify it: **[docs/docker.md](docs/docker.md)**.
+
+> ⚠️ This exposes a browser that is signed in to your accounts. Read the
+> Docker section of [SECURITY.md](SECURITY.md) first — the threat model is not
+> the same as a localhost-only install.
+
+Images publish from CI: `:latest` from `main`, `:beta` from `develop`.
+
+```
+ghcr.io/zjean/paperpull:latest
+```
+
+This fork tracks [rheeloaded/paperpull](https://github.com/rheeloaded/paperpull)
+for new providers — see [docs/upstream.md](docs/upstream.md).
+
+## Quick start (native)
+
+> The `.bat` / `.command` launchers below are upstream's, and still work, but
+> are **unmaintained in this fork**. Docker is the supported path.
+
 
 ![Quick start](docs/quickstart.gif)
 

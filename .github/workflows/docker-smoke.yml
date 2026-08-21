@@ -1,0 +1,87 @@
+# Stand the whole stack up and check it end to end.
+#
+# Separate from docker-publish.yml on purpose: this pulls a 4.5GB browser
+# image and drives a real Chrome, which is too slow and too flaky to gate
+# every push on. But it is the only test that catches the failures that matter
+# most — an upstream Chrome release that changes its remote-debugging rules, or
+# a Playwright release that changes where download artifacts land. Both have
+# happened; see docs/docker.md.
+name: docker stack smoke
+
+on:
+  schedule:
+    # Mondays, 06:00 UTC. Chrome ships roughly every four weeks.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - docker-compose.yml
+      - docker/**
+      - tools/docker_smoke.py
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the panel image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: paperpull:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Bring the stack up
+        run: |
+          docker network create proxy
+          cat > .env <<'EOF'
+          TZ=UTC
+          BROWSER_USER=ci
+          BROWSER_PASSWORD=ci-only-not-a-secret
+          PAPERPULL_ALLOWED_HOSTS=paperpull.ci.invalid
+          PAPERPULL_BROWSER_URL=
+          PAPERPULL_IMAGE=paperpull:ci
+          EOF
+          docker compose up -d
+
+      - name: Wait for Chrome's DevTools port
+        run: |
+          for i in $(seq 1 60); do
+            if docker compose exec -T paperpull \
+                 curl -fsS -m 2 http://localhost:9222/json/version >/dev/null 2>&1; then
+              echo "up after ${i} tries"; exit 0
+            fi
+            sleep 5
+          done
+          echo "Chrome never opened its debugging port."
+          echo "Most likely cause: CHROME_CLI lost its explicit --user-data-dir,"
+          echo "which Chrome 136+ requires before it will enable remote debugging."
+          exit 1
+
+      - name: Smoke test
+        run: docker compose exec -T paperpull python /app/tools/docker_smoke.py
+
+      - name: A real app attaches to the shared browser
+        run: |
+          # Nobody is signed in, so "signed out" is the correct answer. What
+          # this proves is that the app reached Chrome, drove a navigation, and
+          # read the page back.
+          out=$(docker compose exec -T paperpull sh -c \
+            'cd /app/apps/ally && timeout 120 python ally_docs.py --login 2>&1')
+          echo "$out"
+          echo "$out" | grep -qiE "connected" \
+            || { echo "the app never attached to the browser"; exit 1; }
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

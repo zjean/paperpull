@@ -1,0 +1,107 @@
+# PaperPull in Docker.
+#
+#   browser      a real Google Chrome with a web desktop. You sign in here.
+#   cdp-bridge   5MB of socat, the only way out of Chrome's loopback-only
+#                DevTools port. Shares the browser's network namespace.
+#   paperpull    the control panel and the downloader apps. Its own network
+#                identity, so it restarts without touching your session.
+#
+# Nothing is published. Both web UIs go through your reverse proxy — see
+# docker/Caddyfile.example. Read docs/docker.md before the first run; the
+# design here is dictated by four non-obvious Chrome and Playwright
+# behaviours, and the comments below say which is which.
+name: paperpull
+
+services:
+  browser:
+    image: lscr.io/linuxserver/chrome:latest
+    container_name: paperpull-browser
+    # Chrome's own sandbox needs this under Docker's default seccomp profile.
+    security_opt:
+      - seccomp:unconfined
+    # Without it Chrome starves on /dev/shm and tabs crash on real sites.
+    shm_size: "1gb"
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${TZ:-Europe/Amsterdam}
+      # The desktop's own login. Anyone who gets past it reaches a browser
+      # that is signed in to your bank, so treat it as a bank password.
+      CUSTOM_USER: ${BROWSER_USER:?set BROWSER_USER in .env}
+      PASSWORD: ${BROWSER_PASSWORD:?set BROWSER_PASSWORD in .env}
+      # --user-data-dir is NOT optional. Chrome 136+ silently refuses remote
+      # debugging on the default profile directory — no error, no log line,
+      # no DevToolsActivePort, the port simply never opens. linuxserver's
+      # wrapper passes a bare valueless --user-data-dir, so ours has to
+      # override it. Removing this line breaks everything, quietly.
+      CHROME_CLI: >-
+        --user-data-dir=/config/pp-profile
+        --remote-debugging-port=9222
+        --remote-allow-origins=*
+    volumes:
+      # Your signed-in profile. Back this up; losing it means signing in to
+      # every provider again. It holds live session cookies — treat it as
+      # secret, and never commit it.
+      - ./browser-profile:/config
+      # Shared with paperpull as its TMPDIR. Playwright's driver creates the
+      # download-artifact directory here and tells Chrome to write into it, so
+      # both containers must see the same real directory. Without this,
+      # download.save_as() reports success and writes a zero-byte file.
+      - pw-artifacts:/pwtmp
+    networks: [internal, proxy]
+    restart: unless-stopped
+
+  cdp-bridge:
+    image: alpine/socat:latest
+    container_name: paperpull-cdp-bridge
+    depends_on: [browser]
+    # Shares the browser's network stack, which is the only vantage point
+    # from which 127.0.0.1:9222 is reachable. It therefore has no hostname of
+    # its own: from paperpull, this listener answers on `browser:9223`.
+    #
+    # Consequence worth knowing: restarting `browser` invalidates this
+    # container's network namespace. Restart the two together —
+    #   docker compose restart browser cdp-bridge
+    network_mode: "service:browser"
+    command: TCP-LISTEN:9223,fork,reuseaddr TCP:127.0.0.1:9222
+    restart: unless-stopped
+
+  paperpull:
+    image: ${PAPERPULL_IMAGE:-ghcr.io/zjean/paperpull:latest}
+    # Comment `image` and uncomment this to run your working tree instead.
+    # build: .
+    container_name: paperpull
+    depends_on: [cdp-bridge]
+    # Must match the browser container's PUID. Playwright's artifact directory
+    # is mode 0700, and Chrome writes the download into it from the other
+    # container — different uids mean zero-byte PDFs.
+    user: "1000:1000"
+    environment:
+      TZ: ${TZ:-Europe/Amsterdam}
+      # The hostname your reverse proxy serves the panel on. Without it every
+      # request from that host is refused as cross-origin.
+      PAPERPULL_ALLOWED_HOSTS: ${PAPERPULL_ALLOWED_HOSTS:?set PAPERPULL_ALLOWED_HOSTS in .env}
+      # Public URL of the browser desktop, for the panel's "Open browser
+      # desktop" link. Cosmetic; leave empty to hide the link.
+      PAPERPULL_BROWSER_URL: ${PAPERPULL_BROWSER_URL:-}
+    volumes:
+      # Per-app config.json files. Seeded on first run, then yours.
+      - ./config:/config
+      # PDFs, the index CSVs, and the delete-safe state (progress.json lives
+      # under output_dir, so this one volume makes re-runs safe across
+      # rebuilds). Contains your statements — treat as secret.
+      - ./data:/data
+      - pw-artifacts:/pwtmp
+    networks: [internal, proxy]
+    restart: unless-stopped
+
+volumes:
+  pw-artifacts:
+
+networks:
+  # Just the two containers talking to each other.
+  internal:
+  # Your existing reverse-proxy network. Create it once with:
+  #   docker network create proxy
+  proxy:
+    external: true

@@ -74,3 +74,16 @@ Thumbs.db
 
 # Verizon browser download temp dir
 **/.vz-downloads/
+
+# --- Docker ---------------------------------------------------------------
+# The compose environment: holds the browser desktop's password.
+.env
+# Bind mounts from docker-compose.yml. In order: the signed-in Chrome profile
+# (live session cookies), the per-app configs, and every downloaded statement
+# plus its state. None of it is ever committable.
+/browser-profile/
+/config/
+/data/
+
+# Claude Code: the shared skills are tracked, per-machine settings are not.
+.claude/settings.local.json

@@ -1,0 +1,29 @@
+# Keep private data and local state out of the build context — an image layer
+# is forever, and this context holds a repo people also run natively.
+.git
+.github
+.env
+.env.*
+!.env.example
+
+# Bind mounts and local state (see docker-compose.yml).
+/browser-profile/
+/config/
+/data/
+
+# Anything a native install leaves behind.
+**/.venv/
+**/*browser-profile*/
+**/config.json
+**/config.*.json
+!**/config.example.json
+**/progress.json
+**/discovery.json
+**/*.csv
+**/*.pdf
+**/new-this-run.txt
+
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+docs/*.gif
