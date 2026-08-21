@@ -25,6 +25,13 @@ from typing import Iterable, List
 IDENTITY_KEY = "identity"
 SESSION_KEY = "session"
 
+# The two fields inside the session record that anything outside this module
+# reads. Named because paperpull_core.appload reads the same file as plain
+# JSON - it answers "who is due?" for the scheduler and the panel without a
+# JsonStore - and a string literal over there could not follow a rename here.
+STATE_KEY = "state"
+LAST_ALIVE_KEY = "last_verified_alive"
+
 WARM = "warm"
 PARKED = "parked"
 
@@ -39,19 +46,19 @@ def write_anchors(store, anchors: Iterable[dict]) -> None:
 
 def mark_warm(store, when: str) -> None:
     """The session was alive at `when`, and is no longer parked."""
-    store.update(SESSION_KEY, {"state": WARM, "last_verified_alive": when,
+    store.update(SESSION_KEY, {STATE_KEY: WARM, LAST_ALIVE_KEY: when,
                                "parked_reason": ""})
 
 
 def park(store, reason: str, when: str) -> None:
     """This account needs a human. Not an error - a state."""
-    store.update(SESSION_KEY, {"state": PARKED, "parked_reason": reason,
+    store.update(SESSION_KEY, {STATE_KEY: PARKED, "parked_reason": reason,
                                "parked_at": when})
 
 
 def session_state(store) -> str:
-    return (store.get(SESSION_KEY) or {}).get("state") or ""
+    return (store.get(SESSION_KEY) or {}).get(STATE_KEY) or ""
 
 
 def last_verified_alive(store) -> str:
-    return (store.get(SESSION_KEY) or {}).get("last_verified_alive") or ""
+    return (store.get(SESSION_KEY) or {}).get(LAST_ALIVE_KEY) or ""

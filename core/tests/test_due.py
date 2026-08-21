@@ -65,6 +65,25 @@ def test_a_parked_account_is_still_due_because_it_needs_a_human():
     assert names(plan) == [("simyo", "primary")]
 
 
+def test_a_parked_account_checked_today_is_still_due():
+    """The motivating case for this whole schedule, and the one the test
+    above missed by leaving `checked` empty: warm at 09:00, the ten-minute
+    session dies, parked at 09:20. `last_checked_date` is therefore TODAY on
+    exactly the account a person most needs to be told about - so parked has
+    to be read before the same-day short-circuit, not after it."""
+    plan = due.plan([acct("simyo", newest="2026-06-01", checked="2026-08-21",
+                          parked=True)], "2026-08-21")
+    assert names(plan) == [("simyo", "primary")]
+
+
+def test_a_parked_account_with_a_fresh_document_is_still_due():
+    """Parked outranks the cadence too: nothing about this account will
+    change until a human signs in, and only the list they read says so."""
+    plan = due.plan([acct("simyo", newest="2026-08-20", parked=True)],
+                    "2026-08-21")
+    assert names(plan) == [("simyo", "primary")]
+
+
 def test_a_provider_specific_cadence_beats_the_default():
     weekly = acct("gap", newest="2026-08-14", cadence=7)
     assert names(due.plan([weekly], "2026-08-21")) == [("gap", "primary")]
@@ -103,6 +122,34 @@ def test_accounts_are_read_off_the_real_trees(tmp_path, monkeypatch):
     rec = found[0]
     assert rec["app"] == "testco"
     assert rec["account"] == "primary"
+    assert rec["newest_document_date"] == "2026-07-01"
+    assert rec["parked"] is True
+    assert rec["last_checked_date"] == "2026-07-02"
+
+
+def test_a_relative_output_dir_is_resolved_against_the_app(tmp_path):
+    """Every one of the 18 shipped config.example.json files says
+    "output_dir": ".", which only ever means the app's own directory - that
+    is the working directory a downloader is launched with. Read literally
+    from a long-lived caller (uvicorn, the scheduler), both state files below
+    are looked for somewhere they never are, and both misses look like
+    facts: "no documents ever" and "never parked". Every account was then
+    always due and none was ever parked."""
+    from paperpull_core import appload
+
+    app_dir = tmp_path / "apps" / "testco"
+    app_dir.mkdir(parents=True)
+    (app_dir / "testco_docs.py").write_text("", encoding="utf-8")
+    (app_dir / "config.json").write_text(
+        '{"output_dir": "."}', encoding="utf-8")
+    (app_dir / "progress.json").write_text(
+        '{"a": {"date": "2026-07-01"}}', encoding="utf-8")
+    (app_dir / "sentinel.json").write_text(
+        '{"session": {"state": "parked", '
+        '"last_verified_alive": "2026-07-02T10:00:00"}}', encoding="utf-8")
+
+    rec = appload.accounts(tmp_path / "apps", None)[0]
+    assert rec["output_dir"] == str(app_dir)
     assert rec["newest_document_date"] == "2026-07-01"
     assert rec["parked"] is True
     assert rec["last_checked_date"] == "2026-07-02"
