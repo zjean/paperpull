@@ -131,6 +131,9 @@ class Paths:
             setattr(self, csv_spec.attr, self.root / name)
         self.progress_json = self.root / "progress.json"
         self.discovery_json = self.root / "discovery.json"
+        # Which account this is, and whether its session was alive last time.
+        # Holds no secret - see paperpull_core.sentinel.
+        self.sentinel_json = self.root / "sentinel.json"
         self.run_summary = self.root / "run-summary.txt"
 
     def columns_for(self, csv_attr: str):

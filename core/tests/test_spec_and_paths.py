@@ -167,3 +167,8 @@ def test_config_saved_with_a_bom_still_loads(tmp_path):
     cfg = tmp_path / "config.json"
     cfg.write_text('{"owner": "Sam"}', encoding="utf-8-sig")
     assert storage.load_config(cfg)["owner"] == "Sam"
+
+
+def test_paths_include_the_sentinel_file(tmp_path):
+    paths = storage.Paths(tmp_path / "out")
+    assert paths.sentinel_json == tmp_path / "out" / "sentinel.json"
