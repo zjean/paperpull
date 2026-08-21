@@ -877,6 +877,12 @@ function endRun(cls, text) {
   clearPrompt();
   $('reply').hidden = true;
   actionButtons().forEach(b => b.disabled = false);
+  // Only re-enable Start Sitting if no sitting is in progress. Between two
+  // accounts' runs a sitting is still live (it is inside a blocking
+  // confirm() for the next one), and Start Sitting must stay disabled for
+  // that whole stretch too - not just while a subprocess is actually
+  // running - or a second click there would re-enter startSitting.
+  if (!sitting) $('sit').disabled = false;
   if (es) { es.close(); es = null; }
   // This is the one place a run is decided to be over - reached from the
   // server's "done" event and from a lost connection alike (see startRun).
@@ -902,12 +908,28 @@ function run(action) {
 // itself: an EventSource whose stream the *server* ends still auto-reconnects
 // unless something on this side calls .close() first.
 function startRun(app, account, action) {
-  if (es) es.close();
+  if (es) {
+    // With the fixes below (startSitting's synchronous re-entrancy guard,
+    // and Start Sitting plus every action button disabled for as long as
+    // any run - manual or sitting-driven - is live) every legitimate call
+    // site now waits for a previous run to end before starting another, so
+    // this should be unreachable. If it ever fires anyway, closing the old
+    // stream silently and reassigning `onRunEnd` would abandon whoever was
+    // still awaiting it, mid-run, with nothing to show for it - so this is
+    // surfaced loudly instead of let it happen quietly.
+    console.error('startRun called while a previous run was still live; '
+                 + 'closing it now. This should not be reachable.');
+    es.close();
+  }
   $('console').textContent = '';
   promptFrom = 0; stopping = false;
   $('answer').value = ''; syncAnswerButton(); clearPrompt();
   setStatus('run', `running ${action} — ${app} / ${account}`);
   actionButtons().forEach(b => b.disabled = true);
+  // Disabled here too (not just inside startSitting) so a manual run alone
+  // - no sitting involved at all - also blocks Start Sitting from being
+  // clicked underneath it.
+  $('sit').disabled = true;
   es = new EventSource(`/api/run?app=${encodeURIComponent(app)}&account=${encodeURIComponent(account)}&action=${action}`);
   // Arrives before any output, so even a first-line prompt can be answered.
   es.addEventListener('run', e => { RUN = e.data; $('reply').hidden = false; });
@@ -935,38 +957,63 @@ function startRun(app, account, action) {
 // would sign each other's session out from under the other; that is the one
 // outcome this whole feature exists to prevent.
 async function startSitting() {
-  const res = await fetch('/api/due');
-  if (!res.ok) {
-    // A failed fetch (503: paperpull_core is not importable here) is not
-    // the same fact as "nobody is due" - it means the panel cannot tell,
-    // and must not be read as "stand down".
-    alert('Cannot read the due list here.');
-    return;
-  }
-  const {due} = await res.json();
-  // A provider with no declared session lifetime can wait for a plain cron
-  // job; only a perishable one needs a person sitting down for it.
-  const queue = due.filter(a => a.session_lifetime_minutes !== null);
-  if (!queue.length) { alert('Nothing needs a person right now.'); return; }
-  sitting = true; sittingAbort = false;
+  // Re-entrancy guard - and it MUST be the very first statement, before any
+  // `await` in this function. A second click on Start Sitting calls this
+  // function again; JS runs synchronously up to the first await, so
+  // `sitting` is already true by the time that second call is dispatched
+  // (dispatched, at the earliest, once this call yields at the `await
+  // fetch` below). Putting this check anywhere later - after the fetch,
+  // after building the queue - leaves exactly that window open: a second
+  // invocation would reach confirm()/startRun() for the same account the
+  // first invocation is still running, and startRun's `if (es) es.close()`
+  // would silently tear down the first invocation's live run and steal its
+  // `onRunEnd`, leaving the first `await startRun(...)` never resolved.
+  if (sitting) return;
+  sitting = true;
   $('sit').disabled = true;
   try {
+    const res = await fetch('/api/due');
+    if (!res.ok) {
+      // A failed fetch (503: paperpull_core is not importable here) is not
+      // the same fact as "nobody is due" - it means the panel cannot tell,
+      // and must not be read as "stand down".
+      alert('Cannot read the due list here.');
+      return;
+    }
+    const {due} = await res.json();
+    // A provider with no declared session lifetime can wait for a plain
+    // cron job; only a perishable one needs a person sitting down for it.
+    const queue = due.filter(a => a.session_lifetime_minutes !== null);
+    if (!queue.length) { alert('Nothing needs a person right now.'); return; }
+    sittingAbort = false;
+    let completed = 0;
     for (const a of queue) {
       if (sittingAbort) break;
       // Sign-in first: a perishable session has to be fresh when the pull
-      // runs, and only a person can make it fresh. Cancelling here - or
+      // runs, and only a person can make it fresh. Declining here - or
       // pressing Stop once the run below has started - ends the whole
-      // sitting, not just this one account.
+      // sitting, not just this one account; `completed` below is what
+      // tells the difference between that and finishing the whole queue.
       if (!confirm(`Sign in to ${a.app} (${a.account}) in the browser desktop, `
                  + `in ONE tab. Press OK when you are signed in.`)) break;
       if (sittingAbort) break;
       await startRun(a.app, a.account, 'resume');
+      completed++;
+    }
+    // A sitting cut short - Cancel on a sign-in prompt, or Stop mid-run -
+    // is not "done": most of the point of this feature is telling a person
+    // what still needs them, and treating a half-finished sitting as
+    // complete would say the opposite of that.
+    if (completed === queue.length) {
+      alert('Sitting done.');
+    } else {
+      alert(`Sitting stopped after ${completed} of ${queue.length} `
+          + `account(s) - ${queue.length - completed} still need a person.`);
     }
   } finally {
     sitting = false;
     $('sit').disabled = false;
   }
-  if (!sittingAbort) alert('Sitting done.');
 }
 $('sit').onclick = startSitting;
 load();
