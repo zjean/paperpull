@@ -101,6 +101,29 @@ services:
     networks: [internal, proxy]
     restart: unless-stopped
 
+  # Runs the providers whose sessions last for days, and lists the ones that
+  # need a person. Same image and same volumes as the panel: it invokes the
+  # app CLIs directly, so there is no Docker socket here and nothing new to
+  # trust. Stop it and nothing else changes.
+  scheduler:
+    image: ${PAPERPULL_IMAGE:-ghcr.io/zjean/paperpull:latest}
+    container_name: paperpull-scheduler
+    depends_on: [browser]
+    user: "${PUID:-1000}:${PGID:-1000}"
+    entrypoint: ["python", "/app/tools/schedule.py"]
+    environment:
+      TZ: ${TZ:-Europe/Amsterdam}
+      PAPERPULL_CONFIG_ROOT: /config
+      # Local hour for the daily pass. Pick one you are usually awake for:
+      # a parked account is only actionable by you.
+      PAPERPULL_SCHEDULE_HOUR: ${PAPERPULL_SCHEDULE_HOUR:-7}
+    volumes:
+      - ./config:/config
+      - ./data:/data
+      - pw-artifacts:/pwtmp
+    networks: [internal]
+    restart: unless-stopped
+
 volumes:
   pw-artifacts:
 

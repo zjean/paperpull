@@ -124,6 +124,56 @@ For a second person's accounts, add a second `browser` service with its own
 offers that account immediately — it reads the directory on each request, so no
 restart is needed.
 
+### Scheduling
+
+The `scheduler` service is a third, optional container. It runs the same
+image as the panel and mounts the same `./config` and `./data`, but it has no
+web UI and no Docker socket — it invokes an app's CLI directly, the same way
+you would type it yourself, once a day.
+
+It only starts a provider whose session lasts for days
+(`session_lifetime_minutes` is `None` in that app's `storage.py`) *and* whose
+entry script already understands `--unattended` — detected by reading the
+script's own text for the flag, the same trick the panel uses to detect
+`--open-browser`. That second condition matters on its own: `--unattended` is
+added to an app one provider at a time, in a later change, once someone
+actually wants that provider scheduled. Until then the scheduler skips it and
+says so on one line — `does not support --unattended yet` — rather than
+either crashing or pretending it ran. Today that line fires for every patient
+app except Simyo, and Simyo is the one provider that can never take this path
+at all (below) — so the honest state of a fresh install is a scheduler that
+runs nothing and explains why, for every account, every day, until you or a
+later change adds the flag to an app you actually want pulled unattended.
+That is correct, not broken.
+
+**Simyo can never be in that first group.** Its session lasts ten minutes,
+which is shorter than a scheduled pass can rely on finding it alive; a
+provider that declares a session lifetime is never started here, on any pass,
+no matter what flags its script has. Instead it is printed as
+`waiting for a person` — the scheduler's way of telling you, and whatever
+reads its log, that this account still needs the panel's **Pilot** or
+**Run All** with you sitting at the browser desktop.
+
+Set `PAPERPULL_SCHEDULE_HOUR` in `.env` to the local hour (0-23, `TZ` already
+set above) you want the daily pass to run. Pick one you are actually awake
+for: a run that parks an account or lists one as waiting is only actionable by
+a person, and 3am is not when you read logs.
+
+To see today's plan without waiting for the schedule, or to check what a
+parked account needs:
+
+```bash
+docker compose exec scheduler python /app/tools/due.py
+```
+
+This lists every due account, most perishable session first, and marks a
+parked one `PARKED - needs sign-in`. **A parked account is a state, not a
+failure.** It means an unattended run found the session already gone and
+exited 0 rather than guessing at a login — nothing crashed, nothing needs
+fixing in code. Open the browser desktop, sign back in to that provider, and
+the next pass — scheduled or a manual `--once` — picks it up from where it
+left off.
+
 ### Restarting things
 
 ```bash
