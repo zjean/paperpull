@@ -5,11 +5,22 @@ image as the panel and invokes the same app CLIs the panel does.
 
 The split is one declared fact. A provider whose AppSpec leaves
 `session_lifetime_minutes` as None holds its session for days, so a scheduled
-`--unattended --resume` will usually find it alive - and if it does not, the
-run parks and exits 0 and nothing is woken up. A provider that declares a
-lifetime (Simyo: ten minutes) can only be pulled while a human is sitting
-there, so it is never started here; it is printed, for the panel's sitting and
-for whatever notifier you point at this log.
+run will usually find it alive - and if it does not, the run parks and exits 0
+and nothing is woken up. A provider that declares a lifetime (Simyo: ten
+minutes) can only be pulled while a human is sitting there, so it is never
+started here; it is printed, for the panel's sitting and for whatever notifier
+you point at this log.
+
+The command is `--unattended --all --yes`, and `--all` is not an overreach.
+It is the only action that asks the provider what exists - an app's `--all`
+discovers first, while `--resume` selects from the local `discovery.json`
+alone and so can never fetch a document nobody has seen yet. A schedule built
+on `--resume` therefore spends the sign-in it was given and prints "Nothing to
+resume", which is a schedule that can never do its job. `--all` downloads
+everything *in scope*, and each app's own "already downloaded" memory
+(`progress.json`) skips what is on disk, so a nightly pass is
+discover-plus-new-only. `--yes` answers the confirmation prompt ahead of
+time, because nobody is here to type it.
 
 A second, narrower gate sits underneath that one: an app can only be started
 unattended if its entry script actually understands `--unattended`. That flag
@@ -42,12 +53,10 @@ from paperpull_core import appload, due  # noqa: E402
 
 POLL_SECONDS = 600
 
-
-def _entry_script(app_dir: Path):
-    for path in sorted(app_dir.glob("*_docs.py")) + \
-            sorted(app_dir.glob("*_receipts.py")):
-        return path
-    return None
+# What a scheduled run of one account actually is. See the module docstring
+# for why --all and not --resume; --yes answers the confirmation prompt that
+# is the only reason --all ever needed a person present.
+UNATTENDED_FLAGS = ["--unattended", "--all", "--yes"]
 
 
 def _supports_unattended(script: Path) -> bool:
@@ -60,9 +69,28 @@ def _supports_unattended(script: Path) -> bool:
     return "--unattended" in text
 
 
+def build_command(account: dict, app_dir: Path, script: Path) -> list:
+    """The exact argv one scheduled account is run with.
+
+    Split out of run_one so it can be asserted on without starting anything:
+    what these flags resolve to inside the app is the difference between a
+    schedule that downloads new documents and one that cannot.
+
+    `appload.python_for`, not `sys.executable`: the documented native setup is
+    a venv per app, holding playwright and paperpull_core, and this process's
+    own interpreter has neither - so every scheduled run died on the app's
+    first import. The panel got this right and this did not, which is exactly
+    the kind of disagreement appload exists to end.
+    """
+    cmd = [appload.python_for(app_dir), script.name, *UNATTENDED_FLAGS]
+    if account["account"] != "primary" or os.environ.get("PAPERPULL_CONFIG_ROOT"):
+        cmd += ["--config", account["config"]]
+    return cmd
+
+
 def run_one(account: dict, apps_root: Path) -> int:
     app_dir = apps_root / account["app"]
-    script = _entry_script(app_dir)
+    script = appload.entry_script(app_dir)
     if script is None:
         print(f"  {account['app']}: no entry script, skipped")
         return 0
@@ -71,9 +99,7 @@ def run_one(account: dict, apps_root: Path) -> int:
               f"{script.name} does not support --unattended yet. "
               f"Add it there before this account can run on its own.")
         return 0
-    cmd = [sys.executable, script.name, "--unattended", "--resume"]
-    if account["account"] != "primary" or os.environ.get("PAPERPULL_CONFIG_ROOT"):
-        cmd += ["--config", account["config"]]
+    cmd = build_command(account, app_dir, script)
     print(f"  $ {' '.join(cmd)}")
     proc = subprocess.run(cmd, cwd=str(app_dir))
     return proc.returncode
@@ -101,6 +127,27 @@ def one_pass(apps_root: Path, config_root, today: str) -> None:
               f"(session lasts {account['session_lifetime_minutes']} min)")
 
 
+def schedule_hour(raw) -> int:
+    """The local hour of the daily pass, or a ValueError saying what is wrong.
+
+    Range-checked, not just parsed. `int("25")` succeeds, and the loop below
+    compares it against `datetime.now().hour`, which never reaches 25 - so a
+    typo produced a scheduler that ran forever, did nothing, and said nothing
+    about it. Under `restart: unless-stopped` a bare traceback is not much
+    better: it restart-loops with the reason scrolling past. One sentence and
+    exit 2 is what a person can act on.
+    """
+    try:
+        hour = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"PAPERPULL_SCHEDULE_HOUR must be a whole number "
+                         f"from 0 to 23; got {raw!r}.")
+    if not 0 <= hour <= 23:
+        raise ValueError(f"PAPERPULL_SCHEDULE_HOUR must be an hour of the day, "
+                         f"from 0 to 23; got {hour}.")
+    return hour
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--once", action="store_true", help="one pass, then exit")
@@ -109,7 +156,14 @@ def main(argv=None) -> int:
     apps_root = Path(os.environ.get("APPS_ROOT", HERE.parent / "apps"))
     root = os.environ.get("PAPERPULL_CONFIG_ROOT", "").strip()
     config_root = Path(root) if root else None
-    hour = int(os.environ.get("PAPERPULL_SCHEDULE_HOUR", "7"))
+    # Checked even for --once, which does not use it: a one-off pass is how a
+    # person tests their compose file, and that is the moment to be told the
+    # hour they set is not one.
+    try:
+        hour = schedule_hour(os.environ.get("PAPERPULL_SCHEDULE_HOUR", "7"))
+    except ValueError as e:
+        print(f"!! {e}", file=sys.stderr)
+        return 2
 
     if args.once:
         one_pass(apps_root, config_root, date.today().isoformat())

@@ -997,7 +997,14 @@ async function startSitting() {
       if (!confirm(`Sign in to ${a.app} (${a.account}) in the browser desktop, `
                  + `in ONE tab. Press OK when you are signed in.`)) break;
       if (sittingAbort) break;
-      await startRun(a.app, a.account, 'resume');
+      // 'all', not 'resume'. Resume selects from the discovery.json this
+      // account already has on disk and never asks the provider what exists,
+      // so a sitting built on it spent the sign-in it had just asked a person
+      // for, printed "Nothing to resume", and called itself done. Run All
+      // discovers first, and every app's own "already downloaded" memory
+      // skips what is on disk - so this is discover-plus-new-only, which is
+      // what a sitting was always meant to be.
+      await startRun(a.app, a.account, 'all');
       completed++;
     }
     // A sitting cut short - Cancel on a sign-in prompt, or Stop mid-run -

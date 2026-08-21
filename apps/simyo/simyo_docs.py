@@ -13,6 +13,23 @@ Usage:
     python simyo_docs.py --diagnose    dump what the API returns (no downloads)
     python simyo_docs.py --dry-run     plan filenames, save nothing
 
+First run of a config, and only ever with you watching:
+    python simyo_docs.py --discover --adopt-identity
+                                       record WHICH account this config's tab
+                                       belongs to. Every other command refuses
+                                       to file anything until this has been
+                                       done once, because one shared Chrome
+                                       plus two Simyo accounts means a run
+                                       could otherwise file the wrong tab's
+                                       invoices under this config's owner.
+
+Scheduled runs (no person present):
+    python simyo_docs.py --unattended --all --yes
+                                       discover, then download anything new.
+                                       A dead session, a missing tab or an
+                                       unprovable identity parks the account
+                                       and exits 0 instead of asking.
+
 Filters: --year YYYY  --start-date YYYY-MM-DD  --end-date YYYY-MM-DD
          --max-docs N  --type Statement
 
@@ -350,6 +367,16 @@ class App:
         act = identity.action(verdict, getattr(self.args, "adopt_identity", False))
 
         if act == identity.REFUSE:
+            if getattr(self.args, "unattended", False):
+                # The fourth "a human is needed" condition, and now the same
+                # shape as the other three (no tab, signed out, security
+                # challenge): park, exit 0, record why. It used to be the odd
+                # one out - a SystemExit, so exit 1 - which made it the only
+                # one that alarmed. And it is the one condition that can
+                # never fix itself: nothing a scheduler does will ever adopt
+                # an identity, so the old behaviour paged someone every night
+                # forever and left nothing on disk saying what for.
+                self._park(f"cannot prove this tab's identity ({verdict})")
             if verdict == identity.MISMATCH:
                 raise SystemExit(
                     "\n!! This tab is NOT the account this config belongs to.\n"
@@ -761,6 +788,18 @@ class App:
 
     def cmd_resume(self):
         self.stats["mode"] = "resume"
+        # Look at the session BEFORE deciding there is nothing to do. _select()
+        # reads discovery.json and nothing else, so a resume with an empty
+        # queue used to return without the page ever being touched - and
+        # check_session, the only thing that records `last_verified_alive`,
+        # never ran. The account then looked unchecked to due.py, came back due
+        # tomorrow, and asked a person to sign in again for the same nothing,
+        # every day. A session verified alive is a fact worth recording whether
+        # or not there turned out to be work behind it.
+        #
+        # process() checks again below; that costs nothing. The page is cached
+        # on the App and check_session writes the sentinel once per run.
+        self.check_session(self.page())
         docs = [d for d in self._select() if not self._already_done(d)]
         if not docs:
             print("Nothing to resume - everything in scope is complete.")
@@ -975,17 +1014,31 @@ def main(argv=None):
             return 2
     if args.unattended:
         # These are the only commands that never need an answer from a person.
-        # --all asks for confirmation, --adopt-identity is the one moment
-        # identity is taken on trust, and --open-browser is a human sitting
-        # down. Refusing here beats hanging in a container at 3am.
+        # --adopt-identity is the one moment identity is taken on trust and
+        # --open-browser is a human sitting down, so neither can appear here.
+        # Refusing beats hanging in a container at 3am.
+        #
+        # --all is admitted, but only WITH --yes. The confirmation prompt is
+        # the only reason --all ever needed a person, and --yes answers it
+        # ahead of time; without it this would block on a typed YES nobody is
+        # there to type. Admitting it is not a convenience: --all is the only
+        # command that asks the provider what exists (cmd_run calls
+        # cmd_discover first), and --resume selects from the local
+        # discovery.json alone. A schedule built on --resume could therefore
+        # never download a document it had not already seen - it spent a
+        # person's sign-in and printed "Nothing to resume". --all downloads
+        # everything IN SCOPE, and _already_done plus progress.json skip what
+        # is on disk, so a nightly pass is discover-plus-new-only.
         #
         # This check runs before App(args) below, on purpose: it needs no
         # config, no sentinel and no browser, so a malformed unattended
         # invocation is refused in milliseconds rather than after a config
         # load that might itself fail. test_unattended.py depends on that
         # ordering.
-        if not (args.discover or args.resume or args.verify):
-            print("--unattended works with --discover, --resume or --verify only.")
+        if not (args.discover or args.resume or args.verify
+                or (args.all and args.yes)):
+            print("--unattended works with --discover, --resume, --verify, "
+                  "or --all --yes.")
             return 2
         if args.adopt_identity:
             print("--adopt-identity is never done unattended.")

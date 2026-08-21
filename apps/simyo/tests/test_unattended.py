@@ -12,13 +12,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import simyo_docs
 
-REFUSAL = "--unattended works with --discover, --resume or --verify only."
+REFUSAL = ("--unattended works with --discover, --resume, --verify, "
+           "or --all --yes.")
 ADOPT_REFUSAL = "--adopt-identity is never done unattended."
 
 
-def test_unattended_all_is_refused(capsys):
-    """--all asks for a typed YES confirmation, so it may never run
-    unattended - there is no one there to type it."""
+def test_unattended_all_without_yes_is_refused(capsys):
+    """--all on its own asks for a typed YES, and there is nobody there to
+    type it. --yes is what answers that prompt ahead of time, so it is the
+    difference between a runnable schedule and a container blocked on stdin -
+    see the test below."""
     assert simyo_docs.main(["--unattended", "--all"]) == 2
     assert REFUSAL in capsys.readouterr().out
 
@@ -53,4 +56,18 @@ def test_unattended_resume_is_not_rejected_by_the_guard():
     args = simyo_docs.build_parser().parse_args(["--unattended", "--resume"])
     assert args.unattended is True
     assert args.resume is True
-    assert (args.discover or args.resume or args.verify) and not args.adopt_identity
+    assert (args.discover or args.resume or args.verify
+            or (args.all and args.yes)) and not args.adopt_identity
+
+
+def test_unattended_all_with_yes_passes_the_guard():
+    """The combination a scheduled run actually uses. It has to pass the
+    guard, because it is the only unattended command that asks the provider
+    what exists - --resume selects from the local discovery.json and so can
+    never fetch a document nobody has seen yet. Same reason as the test
+    above for stopping short of calling main(): past the guard lies App(args),
+    a real config and a browser."""
+    args = simyo_docs.build_parser().parse_args(
+        ["--unattended", "--all", "--yes"])
+    assert (args.discover or args.resume or args.verify
+            or (args.all and args.yes)) and not args.adopt_identity
