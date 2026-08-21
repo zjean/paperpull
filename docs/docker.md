@@ -35,19 +35,21 @@ already uses.
 
 ```bash
 git clone https://github.com/zjean/paperpull.git && cd paperpull
-
-# On Linux, Docker creates a missing bind mount as root, and both containers
-# run as uid 1000 — so these have to exist and be ours before the first start.
-# 1000 is not arbitrary; it is the browser container's PUID, and a mismatch is
-# what turns downloads into zero-byte files (see #4 below).
-mkdir -p config data browser-profile
-sudo chown -R 1000:1000 config data browser-profile
-
 cp .env.example .env
-$EDITOR .env                    # BROWSER_PASSWORD and PAPERPULL_ALLOWED_HOSTS
+$EDITOR .env          # PUID/PGID, BROWSER_PASSWORD, PAPERPULL_ALLOWED_HOSTS
+
+# Docker creates a missing bind mount as root, and neither container runs as
+# root, so these have to exist and belong to PUID:PGID before the first start.
+mkdir -p config data browser-profile
+sudo chown -R "$(id -u):$(id -g)" config data browser-profile
+
 docker network create proxy     # if you don't have one already
 docker compose up -d
 ```
+
+Set `PUID`/`PGID` to your own `id -u` / `id -g` and everything the stack writes
+is readable on the host without `sudo`. Both containers take the same pair,
+which is not a convenience — see #4.
 
 Deploying to a real server, including publishing the images and pointing a
 proxy at them, is walked through in the [README](../README.md#deploy-it-to-a-server).
@@ -77,7 +79,8 @@ like in that one Chrome and leave the tabs open.
 For a second person's accounts, add a second `browser` service with its own
 `/config` volume and its own bridge port, and point that account's
 `config.<name>.json` at it. Drop the file into `./config/<app>/` and the panel
-picks the account up on its next load.
+offers that account immediately — it reads the directory on each request, so no
+restart is needed.
 
 ### Restarting things
 
@@ -164,7 +167,10 @@ Two things fix it, and both are required:
   so pointing both at the same real directory makes the copy a local one.
 - **The same uid on both sides.** That artifact directory is created mode
   `0700`, and Chrome — running as the other container's user — has to write into
-  it. Hence `PUID=1000` on `browser` and `user: "1000:1000"` on `paperpull`.
+  it. So `browser`'s `PUID`/`PGID` and `paperpull`'s `user:` read the same two
+  variables, and a deployment can pick any uid as long as it picks one. The
+  browser's init also hands the shared `/pwtmp` volume to that uid, since a
+  named volume otherwise starts out owned by root.
 
 `tools/docker_smoke.py` checks exactly this, by weighing a PDF of known size.
 
@@ -206,10 +212,13 @@ releases instead of quietly pinning you to an old one.
 
 ### What is on which volume
 
+All of it is owned by `PUID:PGID`, so it is yours to read and back up on the
+host without `sudo`.
+
 | Path | Holds | |
 |---|---|---|
 | `./browser-profile` | the signed-in Chrome profile | **secret** — live session cookies. Back it up; losing it means signing in everywhere again. |
-| `./config` | per-app `config.json` | seeded on first run, then yours; never overwritten |
+| `./config` | per-app `config.json` | seeded on first run, then yours; never overwritten. The panel passes an absolute `--config`, so nothing is linked into the app directories and they stay read-only. |
 | `./data` | PDFs, index CSVs, `progress.json` | **secret** — your statements. Also what makes a re-run delete-safe. |
 | `pw-artifacts` | in-flight downloads | disposable |
 

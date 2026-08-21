@@ -140,9 +140,32 @@ def _login_flag(script: Path) -> str:
     return "--open-browser" if "--open-browser" in text else "--login"
 
 
+def _config_root() -> Path:
+    """Where the real config files live, if not in the app's own folder.
+
+    In a container the app directories are part of the image, so a config kept
+    there would vanish on the next rebuild. PAPERPULL_CONFIG_ROOT points at a
+    volume holding <root>/<app>/config*.json instead, and the panel passes an
+    absolute --config so nothing has to be linked into the app directory. That
+    keeps those directories read-only, which is what lets the container run as
+    whatever uid you like rather than the one baked into the image.
+    """
+    root = os.environ.get("PAPERPULL_CONFIG_ROOT", "").strip()
+    return Path(root) if root else None
+
+
+def _config_dir(app_dir: Path) -> Path:
+    """The directory holding this app's config files."""
+    root = _config_root()
+    return (root / app_dir.name) if root else app_dir
+
+
 def _accounts(app_dir: Path):
     accts = ["primary"]
-    for cfg in sorted(app_dir.glob("config.*.json")):
+    cfg_dir = _config_dir(app_dir)
+    if not cfg_dir.is_dir():
+        return accts
+    for cfg in sorted(cfg_dir.glob("config.*.json")):
         if cfg.name == "config.example.json":
             continue
         name = cfg.name[len("config."):-len(".json")]
@@ -197,8 +220,16 @@ def _build_cmd(app_meta: dict, account: str, action: str):
     for f in ACTIONS[action]["flags"]:
         flags.append(app_meta["login_flag"] if f == "__LOGIN__" else f)
     cmd = [app_meta["python"], app_meta["script"], *flags]
-    if account != "primary":
-        cmd += ["--config", f"config.{account}.json"]
+    name = "config.json" if account == "primary" else f"config.{account}.json"
+    root = _config_root()
+    if root:
+        # Absolute, because the app runs with its own directory as the working
+        # directory and the file is not in it.
+        cmd += ["--config", str(root / app_meta["name"] / name)]
+    elif account != "primary":
+        # Natively, primary means "the config.json next to the script", which
+        # is the default and needs no flag.
+        cmd += ["--config", name]
     return cmd
 
 

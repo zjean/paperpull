@@ -47,6 +47,7 @@ behaves there, and both default to the native behaviour above:
 | `PAPERPULL_ALLOWED_HOSTS` | Extra hostnames the page may be served from, comma-separated. Behind a reverse proxy this is required: without it every request from your panel's hostname is refused as cross-origin. Exact matches; localhost is always allowed. |
 | `PAPERPULL_REMOTE_BROWSER` | The sign-in browser is in another container. **Login** then means "attach and report whether I'm signed in" (`--login`) rather than "open a window" (`--open-browser`) — there is no display here to open one on. Also stops the panel warning about missing per-app `.venv`s, since the image runs every app on one interpreter. |
 | `PAPERPULL_BROWSER_URL` | Public URL of the browser desktop. Adds an "Open browser desktop" link to the panel. Cosmetic. |
+| `PAPERPULL_CONFIG_ROOT` | Read each app's `config*.json` from `<root>/<app>/` instead of the app's own folder, and pass it as an absolute `--config`. In the image the app folders are part of the image, so a config kept there would not survive a rebuild — and not writing into them is what lets the container run as any uid. Accounts are read per request, so a new `config.<name>.json` appears without a restart. |
 
 ## Tests
 

@@ -149,3 +149,88 @@ def test_remote_browser_hides_the_missing_venv_warning(monkeypatch):
 def test_native_still_expects_venvs(monkeypatch):
     monkeypatch.delenv("PAPERPULL_REMOTE_BROWSER", raising=False)
     assert panel.api_apps()["expect_venvs"] is True
+
+
+# -- configs kept outside the app directory --------------------------------
+#
+# Natively an app reads config.json from its own folder. In the image that
+# folder is inside the image, so the real files live on a volume and the panel
+# passes an absolute --config instead. That keeps the app directories
+# read-only, which is what lets the container run as any uid rather than the
+# one baked into the image.
+
+
+@pytest.fixture()
+def fake_app(tmp_path):
+    app_dir = tmp_path / "apps" / "ally"
+    app_dir.mkdir(parents=True)
+    (app_dir / "ally_docs.py").write_text("x\n", encoding="utf-8")
+    (app_dir / "config.example.json").write_text("{}", encoding="utf-8")
+    return app_dir
+
+
+def test_accounts_read_from_the_app_dir_natively(monkeypatch, fake_app):
+    monkeypatch.delenv("PAPERPULL_CONFIG_ROOT", raising=False)
+    (fake_app / "config.spouse.json").write_text("{}", encoding="utf-8")
+    assert panel._accounts(fake_app) == ["primary", "spouse"]
+
+
+def test_accounts_read_from_the_config_root_when_set(monkeypatch, fake_app, tmp_path):
+    root = tmp_path / "config"
+    (root / "ally").mkdir(parents=True)
+    (root / "ally" / "config.json").write_text("{}", encoding="utf-8")
+    (root / "ally" / "config.spouse.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PAPERPULL_CONFIG_ROOT", str(root))
+    # A stray file in the app dir must not be picked up: the volume is the
+    # source of truth once a config root is set.
+    (fake_app / "config.stale.json").write_text("{}", encoding="utf-8")
+    assert panel._accounts(fake_app) == ["primary", "spouse"]
+
+
+def test_a_new_account_file_is_seen_without_a_restart(monkeypatch, fake_app, tmp_path):
+    root = tmp_path / "config"
+    (root / "ally").mkdir(parents=True)
+    monkeypatch.setenv("PAPERPULL_CONFIG_ROOT", str(root))
+    assert panel._accounts(fake_app) == ["primary"]
+    (root / "ally" / "config.spouse.json").write_text("{}", encoding="utf-8")
+    assert panel._accounts(fake_app) == ["primary", "spouse"]
+
+
+def _meta(app_dir, accounts):
+    return {"name": app_dir.name, "dir": str(app_dir), "script": "ally_docs.py",
+            "python": "python", "login_flag": "--login", "accounts": accounts,
+            "has_venv": False}
+
+
+def test_native_primary_passes_no_config_flag(monkeypatch, fake_app):
+    monkeypatch.delenv("PAPERPULL_CONFIG_ROOT", raising=False)
+    cmd = panel._build_cmd(_meta(fake_app, ["primary"]), "primary", "pilot")
+    assert "--config" not in cmd
+
+
+def test_native_named_account_passes_a_relative_config(monkeypatch, fake_app):
+    monkeypatch.delenv("PAPERPULL_CONFIG_ROOT", raising=False)
+    cmd = panel._build_cmd(_meta(fake_app, ["primary", "spouse"]), "spouse", "pilot")
+    assert cmd[-2:] == ["--config", "config.spouse.json"]
+
+
+def test_config_root_passes_an_absolute_path_even_for_primary(monkeypatch, fake_app, tmp_path):
+    root = tmp_path / "config"
+    monkeypatch.setenv("PAPERPULL_CONFIG_ROOT", str(root))
+    cmd = panel._build_cmd(_meta(fake_app, ["primary"]), "primary", "pilot")
+    assert cmd[-2] == "--config"
+    assert cmd[-1] == str(root / "ally" / "config.json")
+
+
+def test_config_root_names_the_account_file(monkeypatch, fake_app, tmp_path):
+    root = tmp_path / "config"
+    monkeypatch.setenv("PAPERPULL_CONFIG_ROOT", str(root))
+    cmd = panel._build_cmd(_meta(fake_app, ["primary", "spouse"]), "spouse", "pilot")
+    assert cmd[-1] == str(root / "ally" / "config.spouse.json")
+
+
+def test_an_unknown_account_is_still_refused(monkeypatch, fake_app, tmp_path):
+    """The account name reaches a command line, so it stays allowlisted."""
+    monkeypatch.setenv("PAPERPULL_CONFIG_ROOT", str(tmp_path / "config"))
+    with pytest.raises(HTTPException):
+        panel._build_cmd(_meta(fake_app, ["primary"]), "../../etc/passwd", "pilot")

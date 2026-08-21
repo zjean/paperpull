@@ -39,11 +39,15 @@ trap 'kill "$CDP_SOCAT" 2>/dev/null || true' EXIT INT TERM
 # ---------------------------------------------------------------------------
 # 2. Configs and output folders.
 #
-# An app reads config.json from its own directory, which lives in the image
-# and is therefore thrown away on every rebuild. So the real files live on the
-# /config volume and get linked in. A first run seeds one from the app's
-# tracked config.example.json with the three values that differ in a
-# container; everything after that is yours to edit and is never overwritten.
+# An app reads config.json from its own directory by default, which here lives
+# in the image and would be thrown away on every rebuild. So the real files
+# live on the /config volume and the panel passes an absolute --config; nothing
+# is linked into the app directories, which therefore stay read-only and let
+# this container run as any uid.
+#
+# A first run seeds a config from the app's tracked config.example.json with
+# the three values that differ in a container. After that it is yours, and is
+# never overwritten.
 # ---------------------------------------------------------------------------
 # On Linux, Docker creates a missing bind-mount directory as root, and we run
 # as uid 1000 — so a first `docker compose up` would die on the first mkdir
@@ -66,7 +70,7 @@ for d in "$CONFIG_ROOT" "$DATA_ROOT"; do
 done
 
 seeded=0
-linked=0
+apps_found=0
 for app_dir in "$APPS"/*; do
     [ -d "$app_dir" ] || continue
     app="$(basename "$app_dir")"
@@ -98,22 +102,28 @@ PY
         seeded=$((seeded + 1))
     fi
 
-    # Link every config this app has on the volume, so `--config
-    # config.spouse.json` works by dropping that file into /config/<app>/.
-    for cfg in "$CONFIG_ROOT/$app"/config*.json; do
-        [ -f "$cfg" ] || continue
-        ln -sf "$cfg" "$app_dir/$(basename "$cfg")"
-        linked=$((linked + 1))
-    done
+    apps_found=$((apps_found + 1))
 done
-log "configs: seeded ${seeded}, linked ${linked}"
+log "configs: ${apps_found} apps, ${seeded} seeded this run"
 
-# A sanity check worth its two lines: a 0700 artifact dir owned by the wrong
-# uid is how cross-container downloads silently become zero-byte files.
-if [ ! -w "${TMPDIR:-/tmp}" ]; then
-    log "WARNING: TMPDIR ${TMPDIR:-/tmp} is not writable — downloads will fail."
-    log "         It must be a volume shared with the browser container, and"
-    log "         both containers must run as the same uid (1000)."
+# The shared artifact directory. An unwritable one is how cross-container
+# downloads silently become zero-byte files, so it is worth waiting for and
+# worth complaining about.
+#
+# The browser container hands /pwtmp to PUID during its own init, which may not
+# have happened yet when we start, so give it a moment rather than declaring a
+# problem that is about to fix itself.
+artifacts="${TMPDIR:-/tmp}"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -w "$artifacts" ] && break
+    sleep 2
+done
+if [ ! -w "$artifacts" ]; then
+    log "WARNING: TMPDIR ${artifacts} is not writable by uid $(id -u):$(id -g)."
+    log "         Downloads will silently produce zero-byte files."
+    log "         Both containers must run as the SAME uid, and share this"
+    log "         directory as a volume. PUID/PGID in .env set it for both."
+    log "         See docs/docker.md, gotcha 4."
 fi
 
 # ---------------------------------------------------------------------------

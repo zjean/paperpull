@@ -34,8 +34,12 @@ services:
     # Without it Chrome starves on /dev/shm and tabs crash on real sites.
     shm_size: "1gb"
     environment:
-      PUID: 1000
-      PGID: 1000
+      # Who owns the files these containers write. Set PUID/PGID in .env to
+      # your own `id -u` / `id -g` and your statements are readable on the host
+      # without sudo. The only hard rule is that both containers use the SAME
+      # pair — see the note on `user:` below.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
       TZ: ${TZ:-Europe/Amsterdam}
       # The desktop's own login. Anyone who gets past it reaches a browser
       # that is signed in to your bank, so treat it as a bank password.
@@ -69,12 +73,17 @@ services:
     # build: .
     container_name: paperpull
     depends_on: [browser]
-    # Must match the browser container's PUID. Playwright's artifact directory
-    # is mode 0700, and Chrome writes the download into it from the other
-    # container — different uids mean zero-byte PDFs.
-    user: "1000:1000"
+    # Must be the same pair as the browser's PUID/PGID, which is why both read
+    # the same variables. Playwright's driver creates its artifact directory
+    # here mode 0700 and Chrome writes the download into it from the other
+    # container, so a mismatch means zero-byte PDFs rather than an error.
+    user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       TZ: ${TZ:-Europe/Amsterdam}
+      # Configs live on the volume below, not in the app directories (which are
+      # part of the image). The panel passes an absolute --config, so nothing
+      # is written into /app and it can run as any uid.
+      PAPERPULL_CONFIG_ROOT: /config
       # The hostname your reverse proxy serves the panel on. Without it every
       # request from that host is refused as cross-origin.
       PAPERPULL_ALLOWED_HOSTS: ${PAPERPULL_ALLOWED_HOSTS:?set PAPERPULL_ALLOWED_HOSTS in .env}

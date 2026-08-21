@@ -75,8 +75,9 @@ Resolve conflicts using "Where the conflicts live" below. Two rules:
 
 A provider that arrives from upstream works in the container with no changes:
 the entrypoint discovers any app directory holding a `*_docs.py` or
-`*_receipts.py`, seeds its `config.json` from `config.example.json`, and links
-it in. Confirm anyway:
+`*_receipts.py` and seeds `/config/<slug>/config.json` from its
+`config.example.json`. The panel then passes that path as an absolute
+`--config`, so nothing is written into the app directory. Confirm anyway:
 
 ```bash
 docker build -t paperpull:dev .

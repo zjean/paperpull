@@ -23,11 +23,14 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# uid 1000 matches linuxserver/chrome's `abc` user. That is not cosmetic:
-# Playwright's driver creates its download-artifact directory mode 0700 under
-# TMPDIR, and Chrome — running as that other container's user — has to be able
-# to write into it. Mismatched uids silently produce zero-byte PDFs.
-RUN useradd --uid 1000 --create-home --shell /bin/bash paperpull
+# No user is created and no uid is baked in. Which uid this runs as is the
+# deployment's choice (PUID/PGID in .env, applied to both containers), so that
+# files on the host volumes belong to the person who has to read them.
+#
+# It only has to MATCH the browser container: Playwright's driver creates its
+# download-artifact directory mode 0700 under TMPDIR, and Chrome — running as
+# the other container's user — must be able to write into it. Mismatched uids
+# silently produce zero-byte PDFs. Nothing in this image needs a passwd entry.
 
 WORKDIR /app
 
@@ -47,12 +50,12 @@ COPY tools/ /app/tools/
 COPY VERSION /app/VERSION
 COPY docker/entrypoint.sh /usr/local/bin/paperpull-entrypoint
 RUN chmod +x /usr/local/bin/paperpull-entrypoint \
- && chown -R 1000:1000 /app/apps \
- # The volume mountpoints. They have to exist and be ours before we drop to
- # uid 1000: an unmounted /config or /data would otherwise be an unwritable
- # root-owned directory, and the entrypoint could not seed a single config.
+ # The volume mountpoints have to exist before anything is mounted over them.
+ # World-writable so that any uid works when a named volume takes its
+ # permissions from here; a bind mount brings the host's own, which is the
+ # point of PUID.
  && mkdir -p /config /data /pwtmp \
- && chown 1000:1000 /config /data /pwtmp
+ && chmod 1777 /config /data /pwtmp
 
 ENV APPS_ROOT=/app/apps \
     PAPERPULL_REMOTE_BROWSER=1 \
@@ -62,8 +65,12 @@ ENV APPS_ROOT=/app/apps \
     PAPERPULL_DATA_ROOT=/data \
     PAPERPULL_PORT=8765 \
     TMPDIR=/pwtmp \
-    HOME=/home/paperpull
+    # Any uid can write here, which a baked-in home directory could not
+    # promise once the uid became a deployment choice. Nothing needs to
+    # persist in it — Playwright's artifacts go to TMPDIR.
+    HOME=/tmp
 
+# A default, not a requirement: docker-compose.yml overrides it from PUID/PGID.
 USER 1000:1000
 WORKDIR /app/gui
 EXPOSE 8765

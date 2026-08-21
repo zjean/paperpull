@@ -1,0 +1,22 @@
+#!/usr/bin/with-contenv bash
+# Hand the shared download-artifact directory to PUID/PGID.
+#
+# /pwtmp is a named volume both containers mount, and Playwright's driver — in
+# the *other* container — creates directories in it mode 0700 that Chrome, here,
+# has to write into. A named volume takes its initial ownership from the image,
+# so without this it belongs to root and downloads silently produce zero-byte
+# files.
+#
+# This init script runs as root before any service starts, which is the only
+# moment either container can fix it.
+DIR=/pwtmp
+[[ -d "$DIR" ]] || exit 0
+
+want="${PUID:-1000}:${PGID:-1000}"
+have="$(stat -c '%u:%g' "$DIR")"
+
+if [[ "$have" != "$want" ]]; then
+    echo "[artifact-dir] ${DIR} is ${have}, giving it to ${want}"
+    chown "$want" "$DIR"
+fi
+chmod 0770 "$DIR"

@@ -177,12 +177,6 @@ with a classic PAT carrying only `read:packages`.
 ```bash
 git clone https://github.com/zjean/paperpull.git /opt/paperpull
 cd /opt/paperpull
-
-# Bind-mount directories must be writable by uid 1000 before the first start.
-# Docker would otherwise create them as root, and both containers run as 1000.
-mkdir -p config data browser-profile
-sudo chown -R 1000:1000 config data browser-profile
-
 cp .env.example .env
 $EDITOR .env
 ```
@@ -190,11 +184,28 @@ $EDITOR .env
 Fill in at least these:
 
 ```ini
+# Your own user, so the downloaded PDFs are yours on the host, not root's.
+PUID=1000                # <- id -u
+PGID=1000                # <- id -g
+
 BROWSER_PASSWORD=<a real password — it guards a signed-in bank session>
 PAPERPULL_ALLOWED_HOSTS=paperpull.example.com
 PAPERPULL_BROWSER_URL=https://browser.example.com/
 TZ=Europe/Amsterdam
 ```
+
+Then create the three bind-mounted directories and give them to that user.
+Docker would otherwise create them as root, and neither container runs as root:
+
+```bash
+mkdir -p config data browser-profile
+sudo chown -R "$(id -u):$(id -g)" config data browser-profile
+```
+
+`PUID`/`PGID` go to **both** containers, and they have to: Chrome writes each
+download into a directory the other container created mode `0700`, so a
+mismatch turns every PDF into a zero-byte file rather than raising an error.
+Set them once in `.env` and that cannot happen.
 
 `PAPERPULL_ALLOWED_HOSTS` is not optional: the panel refuses any request whose
 `Origin` it does not recognise, so without your hostname there every click
@@ -256,6 +267,10 @@ docker compose restart browser              # that's all — nothing else needs 
 Rolling back is why every build also gets a `:sha-<short>` tag — put one in
 `PAPERPULL_IMAGE` and `up -d`.
 
+**Your files are yours.** Everything the containers write — `./data` (PDFs,
+index CSVs, state), `./config`, `./browser-profile` — is owned by `PUID:PGID`,
+so you can read, rsync and back it up on the host without `sudo`.
+
 **Back up `./browser-profile` and `./data`.** The first holds live session
 cookies for every provider you have signed into, so losing it means signing in
 everywhere again — and it is as sensitive as a password. The second holds your
@@ -266,11 +281,12 @@ statements. Neither is committable; `.gitignore` and `.dockerignore` block both.
 | Symptom | Cause |
 |---|---|
 | `denied` / `unauthorized` on pull | GHCR packages are still private — step 1. |
-| Container exits: `/config is not writable` | The `chown -R 1000:1000` in step 2 was skipped. |
+| Container exits: `/config is not writable` | The `chown` in step 2 was skipped, or does not match `PUID`/`PGID`. |
 | Every panel click returns 403 | Your hostname is missing from `PAPERPULL_ALLOWED_HOSTS`. |
 | Panel shows nothing during a run, then everything | The proxy is buffering; `flush_interval -1`. |
 | **Login** says it cannot connect | Give the browser a minute. If it persists, `docker compose logs browser`. |
-| Downloads are 0 bytes | The `pw-artifacts` volume or the uid match broke — gotcha #4 in [docs/docker.md](docs/docker.md). |
+| Downloads are 0 bytes | `PUID`/`PGID` differ between the containers, or the `pw-artifacts` volume was replaced — gotcha #4 in [docs/docker.md](docs/docker.md). |
+| Files on the host are owned by root | `PUID`/`PGID` were left at the default and your user is not 1000. |
 
 Full reference, including the five silent Chrome and Playwright behaviours this
 design works around: **[docs/docker.md](docs/docker.md)**.
