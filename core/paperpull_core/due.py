@@ -46,7 +46,9 @@ def _is_due(account: dict, today: date) -> bool:
     if newest is None:
         # Never run, or a date nothing can parse. Both mean "look".
         return True
-    cadence = account.get("cadence_days") or DEFAULT_CADENCE_DAYS
+    cadence = account.get("cadence_days")
+    if cadence is None:
+        cadence = DEFAULT_CADENCE_DAYS
     return (today - newest).days >= int(cadence)
 
 

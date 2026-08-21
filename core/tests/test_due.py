@@ -73,3 +73,8 @@ def test_a_provider_specific_cadence_beats_the_default():
 def test_an_unreadable_date_does_not_take_the_scheduler_down():
     plan = due.plan([acct("simyo", newest="not-a-date")], "2026-08-21")
     assert names(plan) == [("simyo", "primary")]
+
+
+def test_a_zero_cadence_beats_the_default():
+    daily = acct("signal", newest="2026-08-21", cadence=0)
+    assert names(due.plan([daily], "2026-08-21")) == [("signal", "primary")]
