@@ -110,7 +110,14 @@ services:
     container_name: paperpull-scheduler
     depends_on: [browser]
     user: "${PUID:-1000}:${PGID:-1000}"
-    entrypoint: ["python", "/app/tools/schedule.py"]
+    # `command`, not `entrypoint`: the image's own entrypoint
+    # (docker/entrypoint.sh) is what brings up the socat bridge to the
+    # browser's DevTools port and seeds /config, then execs whatever it was
+    # given — the same path a one-off `docker compose run --rm paperpull
+    # python ...` takes. Overriding it with `entrypoint:` here would skip
+    # both, silently, and every app's cdp_url would have nothing to connect
+    # to inside this container.
+    command: ["python", "/app/tools/schedule.py"]
     environment:
       TZ: ${TZ:-Europe/Amsterdam}
       PAPERPULL_CONFIG_ROOT: /config

@@ -131,6 +131,15 @@ image as the panel and mounts the same `./config` and `./data`, but it has no
 web UI and no Docker socket — it invokes an app's CLI directly, the same way
 you would type it yourself, once a day.
 
+It reaches the browser exactly the way the panel does, and for the same
+reason: the compose file gives it `command`, not `entrypoint`, so the image's
+own `docker/entrypoint.sh` still runs first — the same file that opens the
+socat bridge to the browser's DevTools port and seeds `/config` for the
+panel. Only once that is done does the entrypoint hand off to
+`tools/schedule.py`. Overriding the entrypoint instead would start the
+scheduler with no route to the browser at all, silently, since nothing here
+would fail until an app actually tried to attach.
+
 It only starts a provider whose session lasts for days
 (`session_lifetime_minutes` is `None` in that app's `storage.py`) *and* whose
 entry script already understands `--unattended` — detected by reading the
