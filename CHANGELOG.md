@@ -7,6 +7,111 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR** — a new app, or a cross-app feature
 - **MAJOR** — breaking changes (repo layout, config format, removing an app)
 
+## [0.9.0] — 2026-08-21
+
+### Added
+- **Several accounts per provider, on a schedule, storing no credential.**
+  A `sentinel.json` beside each account's `progress.json` records two things
+  that cannot log in to anything: which account a browser tab belongs to (a
+  fingerprint of documents that account is known to own) and whether its
+  session was alive the last time anything looked. From those,
+  `paperpull_core.due` answers who is worth running today and in what order,
+  `tools/due.py` and the panel's `/api/due` print it, and `tools/schedule.py`
+  runs the accounts that can run themselves.
+
+  The question that started this was "where do the passwords live", and the
+  answer is that there are none. A session here is perishable and only a human
+  can renew it — Simyo signs out after ten minutes idle, and a second tab
+  signs out the first — so a stored password would buy an unattended
+  *re-login*, which is the one thing this project exists not to do. What is
+  scheduled instead is the human: providers whose sessions last for days run
+  unattended, and the ones that do not are queued for a sitting,
+  most-perishable-first. `docs/adr/2026-08-21-no-stored-credentials.md`
+  records the decision and the six conditions any future change would have to
+  meet in one go.
+
+- **An identity gate on Simyo.** In the Docker layout one Chrome holds every
+  provider's session and a tab is found by matching the provider's host, so
+  with two Simyo accounts signed in a run could read the wrong tab and file
+  its invoices under the other account's owner — silently, because the owner
+  comes from the config and never from the page. A run now refuses unless it
+  can prove the tab is this config's account. Adopting that proof is a
+  deliberate, watched, once-per-account act: `--discover --adopt-identity`, or
+  the panel's new **Adopt identity** button, which then shows what it recorded
+  so it can be checked. Simyo only; the other 17 apps behave as before.
+
+- **One live session per provider, enforced in a file.** `AppSpec.concurrency`
+  declares how many sessions a provider tolerates and
+  `paperpull_core.locks` holds them on disk, so the rule survives a panel
+  restart and also covers someone running a downloader straight from a
+  terminal. A lock older than six hours is taken over, because a pid means
+  nothing across containers.
+
+- **`--unattended`**, on Simyo so far: a dead session, a missing tab, a
+  security challenge or an unprovable identity park the account and exit 0
+  instead of asking a question nobody is present to answer. A parked account
+  is a state, not a failure, and it stays at the top of the due list until a
+  person deals with it.
+
+### Fixed
+- **Neither the scheduler nor the panel's sitting could ever download a new
+  document.** Both ran `resume`, which selects from the `discovery.json` an
+  account already has and never asks the provider what exists — `cmd_discover`
+  is reached from `--pilot` and `--all` only. So a sitting spent the sign-in
+  it had just asked a person for, printed "Nothing to resume", and reported
+  itself done; the scheduler had no working unattended path at all. Both now
+  run `--all` (with `--yes`, which answers the confirmation that was the only
+  reason `--all` needed a person), and `--unattended` admits that combination.
+  Nothing is re-fetched: each app's own already-downloaded memory makes a pass
+  discover-plus-new-only.
+
+  A resume that finds nothing now still verifies the session first, so
+  `last_verified_alive` is written on that path too. Without it the account
+  looked unchecked, came back due tomorrow, and asked for a sign-in daily,
+  forever, to do nothing.
+
+- **One Stop, or one closed browser tab, wedged the panel's Run button for
+  that provider.** Nothing caught `SIGTERM`, so a run died without releasing
+  its session slot, and the panel counted every lock file it found with no
+  staleness rule — refusing that provider for six hours while a terminal
+  three feet away ran the same account fine. The apps now release the slot on
+  `SIGTERM`, and the panel applies the same ageing rule the CLI does.
+
+- **The panel and the CLI computed different lock directories**, so neither
+  could see the other's lock and the guard silently guarded nothing. Both were
+  deriving a per-provider invariant from `output_dir`, which is per account and
+  chosen by the user; it now comes from `PAPERPULL_DATA_ROOT` or the app's own
+  directory, once, in `paperpull_core.appload`.
+
+- **`appload` did not resolve a relative `output_dir`**, and all 18 shipped
+  `config.example.json` files say `"output_dir": "."`. Every account then
+  reported no documents and no park record, so natively every account was
+  always due and none was ever parked — while the panel showed the opposite
+  about the same account.
+
+- **A parked account vanished from the due list for the rest of the day.**
+  Parking does not clear `last_verified_alive`, and the due check dropped
+  anything already looked at today — which is exactly when an account gets
+  parked: warm at 09:00, session dies, parked at 09:20. Parked is now read
+  first.
+
+- **The scheduler launched every app on its own interpreter** rather than the
+  app's `.venv`, where `playwright` and `paperpull_core` actually are, so
+  natively no scheduled run got past the app's first import.
+  `PAPERPULL_SCHEDULE_HOUR` is now range-checked too: `25` parsed fine and
+  produced a scheduler that ran forever and did nothing.
+
+### Changed
+- `sentinel.json` and `.locks/` are gitignored. A sentinel holds real invoice
+  numbers and dates for a real account — the same class of data as
+  `progress.json`, which was already listed by name.
+- The `scheduler` container declares no healthcheck. The image's own check
+  curls the panel, which this container does not serve, so it sat permanently
+  `unhealthy` under `restart: unless-stopped`.
+- Core is 0.2.0. `apps/simyo/storage.py` now hard-imports three new
+  `paperpull_core` modules, so an install pinned to an older core fails on
+  every command — this is the version to pin to instead.
+
 ## [0.8.0] — 2026-08-21
 
 ### Added
