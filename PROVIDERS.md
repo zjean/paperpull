@@ -10,7 +10,7 @@ telecoms, payroll systems, and retailers real people actually use.
   [provider request](https://github.com/rheeloaded/paperpull/issues/new/choose)
   so someone with that account can pick it up.
 
-## Supported (16)
+## Supported (17)
 
 | App | Provider | Documents | Category |
 |-----|----------|-----------|----------|
@@ -23,6 +23,7 @@ telecoms, payroll systems, and retailers real people actually use.
 | [`navyfederal`](apps/navyfederal) | Navy Federal CU | Account statements | Bank / credit union |
 | [`redcard`](apps/redcard) | Target RedCard / Circle Card (TD Bank) | Billing statements | Card |
 | [`robinhood`](apps/robinhood) | Robinhood | Account statements, tax docs | Brokerage |
+| [`simyo`](apps/simyo) | Simyo (Netherlands) | Invoices (facturen) | Telecom |
 | [`target`](apps/target) | Target | Receipts (online + in-store) | Retail |
 | [`tmobile`](apps/tmobile) | T-Mobile | Bill statements | Telecom |
 | [`ukg`](apps/ukg) | UKG Pro / UltiPro | Pay statements | Payroll |

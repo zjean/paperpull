@@ -1,0 +1,21 @@
+{
+  "_comment": "Editable rules mapping Simyo document titles to filename summaries. Simyo is a Dutch provider, so the titles are Dutch: 'factuur' is an invoice and 'specificatie' is the per-call usage breakdown. The categories they map to (Statement, Tax Document) stay in the project's own vocabulary so filing matches the other apps. Simyo issues no tax forms; tax_rules is empty on purpose. Repair after running diagnose.command against your real Facturen page.",
+  "tax_rules": [],
+  "insurance_rules": [],
+  "statement_rules": [
+    {"pattern": "\\bfactu(ur|ren)\\b", "summary": "Factuur"},
+    {"pattern": "\\bspecificatie\\b", "summary": "Specificatie"},
+    {"pattern": "\\bverbruiksoverzicht\\b", "summary": "Verbruiksoverzicht"},
+    {"pattern": "\\bbetalingsoverzicht\\b", "summary": "Betalingsoverzicht"},
+    {"pattern": "\\bstatement\\b", "summary": "Account Statement"}
+  ],
+  "skip_patterns": [
+    "nieuwsbrief",
+    "privacyverklaring",
+    "privacy\\s?beleid",
+    "algemene\\s+voorwaarden",
+    "aanbieding",
+    "actievoorwaarden",
+    "reclame"
+  ]
+}
