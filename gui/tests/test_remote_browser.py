@@ -216,6 +216,12 @@ def _meta(app_dir, accounts):
     # older list-of-strings one.
     return {"name": app_dir.name, "dir": str(app_dir), "script": "ally_docs.py",
             "python": "python", "login_flag": "--login",
+            # These tests are about _build_cmd's config/account handling, not
+            # about per-app action gating (see gui/app.py's
+            # _supported_actions and test_action_gating.py) - so this fake
+            # meta claims every action is supported, matching what a real
+            # app's --pilot etc. already are everywhere.
+            "supported_actions": list(panel.ACTIONS),
             "accounts": [{"name": a} for a in accounts],
             "has_venv": False}
 

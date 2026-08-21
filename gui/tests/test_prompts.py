@@ -73,9 +73,16 @@ def test_an_over_long_answer_is_truncated():
 
 
 def _prompting_child(tmp_path: Path, name: str = "child.py") -> Path:
-    """A stand-in for an app that has paused to ask something."""
+    """A stand-in for an app that has paused to ask something.
+
+    Its comment line exists only so gui/app.py's `_supported_actions` (a
+    plain substring read of the script's own text, same as `_login_flag`)
+    counts this fake script as supporting the actions these tests drive it
+    with - `pilot` here - the same way a real app's own argparse flags do.
+    """
     p = tmp_path / name
     p.write_text(
+        "# --pilot --discover --all --resume --verify --yes\n"
         "import sys\n"
         'print("!! Amazon appears to have signed you out.")\n'
         'ans = input("Press Enter after you are signed in again... ")\n'

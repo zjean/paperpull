@@ -170,6 +170,37 @@ def _remote_browser() -> bool:
     return os.environ.get("PAPERPULL_REMOTE_BROWSER", "").strip().lower() in _TRUTHY
 
 
+def _supported_actions(script: Path) -> list:
+    """Which of ACTIONS this app's entry script actually accepts.
+
+    ACTIONS is one global table, but the flags behind it are not universal:
+    `--adopt-identity` exists only on the entry scripts of apps this feature
+    has reached (Simyo, then Youfone), and every other app's argparser
+    refuses it with "unrecognized arguments" - a real failure, not a no-op.
+    Before this, the panel offered "Adopt identity" on all 18 apps regardless,
+    because ACTIONS is global and nothing gated it per app.
+
+    Same technique as `_login_flag` just below and tools/schedule.py's
+    `_supports_unattended`: read the script's own source rather than keep a
+    second table that would drift out of sync with it. An action is offered
+    only when every one of its flags is literally present in the script's
+    text - except the `__LOGIN__` placeholder, which is not a real flag; it
+    is always resolved to something the script supports (`_login_flag`
+    itself proves that), so it never disqualifies an action.
+
+    A plain substring search, exactly like `_login_flag`'s - the same
+    accepted imprecision: a script that merely mentions a flag in a comment
+    would pass. No app does that today, and hiding a button a script does
+    truly support would be the worse failure of the two.
+    """
+    try:
+        text = script.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        text = ""
+    return [key for key, spec in ACTIONS.items()
+            if all(f == "__LOGIN__" or f in text for f in spec["flags"])]
+
+
 def _login_flag(script: Path) -> str:
     # With a remote browser there is nothing for us to launch: it is already
     # running, and the user signs in on its own desktop. So Login means what
@@ -295,6 +326,7 @@ def discover_apps():
             "script": script.name,
             "python": _python_for(d),
             "login_flag": _login_flag(script),
+            "supported_actions": _supported_actions(script),
             "accounts": _accounts(d),
             "has_venv": _venv_python(d) is not None,
         }
@@ -320,6 +352,13 @@ def api_apps():
 def _build_cmd(app_meta: dict, account: str, action: str):
     if action not in ACTIONS:
         raise HTTPException(400, "unknown action")
+    # Defense in depth behind the hidden button: the page only offers actions
+    # in `supported_actions`, but nothing stops a direct POST from asking for
+    # one anyway. Refusing here, before a subprocess is ever started, is what
+    # keeps that direct call from reaching argparse's own "unrecognized
+    # arguments" failure instead.
+    if action not in app_meta.get("supported_actions", []):
+        raise HTTPException(400, f"{app_meta['name']} does not support {action!r}")
     if account not in [a["name"] for a in app_meta["accounts"]]:
         raise HTTPException(400, "unknown account")
     flags = []
@@ -825,13 +864,28 @@ async function load() {
   for (const [k, label] of Object.entries(META.actions)) {
     const b = document.createElement('button');
     b.textContent = label; b.className = (k === 'all') ? 'primary' : '';
+    b.dataset.action = k;
     b.onclick = () => run(k);
     acts.append(b);
   }
   onApp();
 }
+// Not every app's entry script accepts every action - `--adopt-identity`
+// exists only on the apps this feature has reached (gui/app.py's
+// `_supported_actions`). Buttons for this app's own ACTIONS were all built
+// once in load(); this only ever hides some of them, per app, rather than
+// rebuilding - hiding is what stops an unsupported one from ever being
+// pressed and reaching argparse's "unrecognized arguments".
+function updateActionButtons() {
+  const m = META.apps[$('app').value];
+  const supported = new Set(m.supported_actions || []);
+  for (const b of actionButtons()) {
+    b.style.display = supported.has(b.dataset.action) ? '' : 'none';
+  }
+}
 function onApp() {
   const m = META.apps[$('app').value];
+  updateActionButtons();
   const accSel = $('account'); accSel.innerHTML = '';
   const accountLabel = (a) => {
     if (!a.identified) return a.name + ' · unidentified';
