@@ -86,7 +86,8 @@ access that already reaches `./browser-profile`, which holds live,
 plaintext, replayable session cookies for every signed-in provider —
 `SECURITY.md` already names this the worst thing that could leak and says
 `./browser-profile` is "as sensitive as the PDFs." The deployment this
-matters for (`docker-compose.yml`: two containers behind a reverse proxy, each
+matters for (`docker-compose.yml`: three containers — `browser`, `paperpull`
+and the `scheduler` this work added — two of them behind a reverse proxy, each
 with `restart: unless-stopped`) already puts that file where root or compose
 access on the box reaches it. So a credential vault would **not raise the
 ceiling of a full compromise** — whoever already reads `./browser-profile`

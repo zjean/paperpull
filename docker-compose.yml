@@ -5,6 +5,9 @@
 #                only way out of Chrome's loopback-only DevTools port.
 #   paperpull    the control panel and the downloader apps. Its own network
 #                identity, so it restarts without touching your session.
+#   scheduler    the same image again, running one unattended pass a day for
+#                the providers whose sessions last that long. Optional: stop
+#                it and nothing else changes.
 #
 # Nothing is published. Both web UIs go through your reverse proxy — see
 # docker/Caddyfile.example. Read docs/docker.md before the first run; the
@@ -108,8 +111,26 @@ services:
   scheduler:
     image: ${PAPERPULL_IMAGE:-ghcr.io/zjean/paperpull:latest}
     container_name: paperpull-scheduler
-    depends_on: [browser]
+    # `paperpull` as well as `browser`: the image's entrypoint seeds /config
+    # from each app's config.example.json, and that is a check-then-act (does
+    # config.json exist? no, write it) which both containers now run. Compose
+    # starts services in dependency order, so naming the panel here means its
+    # seeding has begun before this one's - and the panel is the container a
+    # person interacts with, so it is the one that should win a tie.
+    depends_on: [browser, paperpull]
     user: "${PUID:-1000}:${PGID:-1000}"
+    # The image's HEALTHCHECK curls the panel's /api/apps. This container
+    # serves no HTTP at all, so that check can only ever fail: it would sit
+    # permanently `unhealthy` and, under the `restart: unless-stopped` below,
+    # any health-keyed monitoring or watchdog would alarm on it or restart it
+    # in a loop. Disabled rather than replaced with a heartbeat file, because
+    # a process whose whole job is one pass a day has no honest sub-day
+    # liveness signal to report, and a heartbeat whose write failed would mark
+    # a working scheduler unhealthy - a new failure mode in exchange for a
+    # signal nothing consumes. `docker compose logs scheduler` says what it
+    # did on each pass, and `tools/due.py` says what is waiting.
+    healthcheck:
+      disable: true
     # `command`, not `entrypoint`: the image's own entrypoint
     # (docker/entrypoint.sh) is what brings up the socat bridge to the
     # browser's DevTools port and seeds /config, then execs whatever it was
@@ -135,7 +156,7 @@ volumes:
   pw-artifacts:
 
 networks:
-  # Just the two containers talking to each other.
+  # Just these containers talking to each other.
   internal:
   # Your existing reverse-proxy network. Create it once with:
   #   docker network create proxy

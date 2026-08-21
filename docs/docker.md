@@ -24,9 +24,11 @@ never sees a password.
                     └── pw-artifacts (shared) ──┘
 ```
 
-Two containers. The bridge into Chrome's DevTools port is an s6 service inside
-the browser rather than a container of its own, so its lifecycle is the
-browser's — there is no third thing to remember to restart.
+Two containers, plus an optional `scheduler` — the same image as `paperpull`
+again, running one unattended pass a day and serving nothing (see
+[Scheduling](#scheduling)). The bridge into Chrome's DevTools port is an s6
+service inside the browser rather than a container of its own, so its
+lifecycle is the browser's — there is nothing extra to remember to restart.
 
 ## Setup
 
@@ -167,6 +169,14 @@ image as the panel and mounts the same `./config` and `./data`, but it has no
 web UI and no Docker socket — it invokes an app's CLI directly, the same way
 you would type it yourself, once a day.
 
+What it types is `--unattended --all --yes`. `--all` is not an overreach:
+it is the only action that asks the provider what exists, where `--resume`
+selects from the `discovery.json` an account already has and so could never
+fetch an invoice nobody had seen yet. Each app's own "already downloaded"
+memory (`progress.json`) skips what is on disk, so a nightly pass is
+discover-plus-anything-new. `--yes` answers the confirmation prompt that is
+the only reason `--all` ever needed a person in the room.
+
 It reaches the browser exactly the way the panel does, and for the same
 reason: the compose file gives it `command`, not `entrypoint`, so the image's
 own `docker/entrypoint.sh` still runs first — the same file that opens the
@@ -202,7 +212,33 @@ reads its log, that this account still needs the panel's **Pilot** or
 Set `PAPERPULL_SCHEDULE_HOUR` in `.env` to the local hour (0-23, `TZ` already
 set above) you want the daily pass to run. Pick one you are actually awake
 for: a run that parks an account or lists one as waiting is only actionable by
-a person, and 3am is not when you read logs.
+a person, and 3am is not when you read logs. A value outside 0-23 is refused
+on startup with a sentence, rather than accepted into a comparison that can
+never be true — a scheduler that runs forever and does nothing.
+
+**How often an account is even considered** is `cadence_days`, and it goes in
+that account's own config — the same file as `output_dir`, i.e.
+`./config/<app>/config.json` (or `config.<account>.json` for a second
+account):
+
+```json
+{
+  "output_dir": "/data/simyo",
+  "cadence_days": 31
+}
+```
+
+It is the number of days that must pass after the newest document already
+downloaded before this account is due again. The default is 31, which suits a
+monthly biller. Widen it for a provider that is annoying to sign in to — a
+statement you only need every other month is two sittings a year instead of
+twelve — and narrow it for one that posts documents weekly. An account is
+always due if it has never run, and a parked account is always listed
+regardless, because only a person can un-park it.
+
+The `scheduler` service has no healthcheck: it serves no HTTP, so the image's
+own check (which curls the panel) would report it permanently unhealthy.
+`docker compose logs scheduler` is what says whether it is working.
 
 To see today's plan without waiting for the schedule, or to check what a
 parked account needs:

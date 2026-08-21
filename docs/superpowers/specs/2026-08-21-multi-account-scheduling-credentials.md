@@ -151,14 +151,20 @@ it must be readable by the container at unattended boot with no human present,
 so anyone with root or compose access can decrypt it. That is the same access
 that already reaches plaintext cookies in `./browser-profile`, which
 `SECURITY.md` already calls as sensitive as the PDFs — so Tier B does not raise
-the ceiling of a full compromise. What it does is widen a *partial* compromise
-(someone who reads `./config` but never touches `./browser-profile`) from
-"session cookies that expire" to "reusable passwords and TOTP seeds."
+the ceiling of a full compromise. What it does is widen a *partial* compromise:
+someone who reads `./config` but never touches `./browser-profile` gets
+nothing usable today, because those are separate volumes and a config holds
+only account labels and paths. A vault turns that same partial reach into
+reusable passwords and TOTP seeds — strictly worse to hand over than a cookie,
+which at least expires.
 
 And it would not have a first customer: Simyo, the provider that prompted the
-question, must not use it. So phase 6 lands the *guard* (a blocklist that
-refuses Tier B for the financial providers) and an ADR recording the decision,
-and leaves the envelope machinery unbuilt until a concrete provider needs it.
+question, must not use it. So phase 6 lands an ADR recording the decision, and
+leaves the envelope machinery unbuilt until a concrete provider needs it. The
+blocklist that refuses Tier B for the financial providers is *not* built here
+either: with nothing to enable, a guard would guard nothing, so it is recorded
+as one of the conditions any future credential store has to land in the same
+change (see the ADR's gate, condition 2) rather than as code shipped now.
 
 ## Rejected
 
@@ -177,3 +183,14 @@ and leaves the envelope machinery unbuilt until a concrete provider needs it.
 Phases 1–4 give scheduled multi-account pulls with no credential stored
 anywhere. Phase 5 hardens concurrency and adds the sitting UI. Phase 6 is a
 decision gate. **Re-evaluate after phase 4** before committing to 5 and 6.
+
+**Phase 1's identity gate covers Simyo only.** `--adopt-identity`, the anchor
+check and the refusal all live in `apps/simyo/simyo_docs.py`; the decision
+itself is provider-agnostic (`paperpull_core.identity`), but no other app calls
+it. So the other 17 apps still do what they always did: file whichever tab
+matching the provider's host they find, under the owner their config names,
+with nothing cross-checking the two. That is the pre-existing behaviour, not a
+regression introduced here — and rolling the gate out is per-provider work,
+because each app has to know which of its own document fields make a stable
+anchor. Simyo goes first because it is the provider with two accounts on one
+browser, which is where the silent mis-filing actually bites.
