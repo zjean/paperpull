@@ -153,24 +153,28 @@ Two containers, behind your own reverse proxy:
 CI builds them, but nothing exists until a branch is pushed:
 
 ```bash
-git push -u origin develop     # builds ghcr.io/zjean/paperpull:beta
+git push -u origin develop     # builds :beta
 # happy with :beta? then
 git switch main && git merge develop && git push   # builds :latest
 ```
 
-**Then make the two packages public**, or the server cannot pull them. GHCR
-publishes as *private* even from a public repo, and a `docker compose pull` that
-fails with `denied` or `unauthorized` is almost always this:
+Two images, both `linux/amd64` and `linux/arm64`:
 
-> github.com/zjean?tab=packages → `paperpull` → Package settings → Change
-> visibility → Public. Repeat for `paperpull-browser`.
+| | |
+|---|---|
+| `ghcr.io/zjean/paperpull` | the panel and the sixteen apps |
+| `ghcr.io/zjean/paperpull-browser` | Chrome, the desktop, and the CDP bridge |
 
-Prefer to keep them private? Then on the server, once:
+Because this repo is public, both packages inherit public visibility and your
+server can pull them with no login. If you ever make the repo private, GHCR
+packages become private too — then either flip them back at
+*github.com/zjean?tab=packages → the package → Package settings → Change
+visibility*, or log the server in once with a classic PAT carrying only
+`read:packages`:
 
 ```bash
 echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u zjean --password-stdin
 ```
-with a classic PAT carrying only `read:packages`.
 
 ### 2. Set it up on the server
 
@@ -280,7 +284,7 @@ statements. Neither is committable; `.gitignore` and `.dockerignore` block both.
 
 | Symptom | Cause |
 |---|---|
-| `denied` / `unauthorized` on pull | GHCR packages are still private — step 1. |
+| `denied` / `unauthorized` on pull | The GHCR packages went private — step 1. |
 | Container exits: `/config is not writable` | The `chown` in step 2 was skipped, or does not match `PUID`/`PGID`. |
 | Every panel click returns 403 | Your hostname is missing from `PAPERPULL_ALLOWED_HOSTS`. |
 | Panel shows nothing during a run, then everything | The proxy is buffering; `flush_interval -1`. |
