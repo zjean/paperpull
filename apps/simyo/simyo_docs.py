@@ -1003,6 +1003,9 @@ def main(argv=None):
     # a human sitting down to sign in - neither one touches the shared,
     # single-session browser tab this lock protects, so neither should have
     # to queue behind it (or be blocked by a run that is genuinely using it).
+    # gui/app.py's _lock_exempt() carries a second, small copy of this same
+    # rule (the panel must not import this module) - change that one too if
+    # this one changes.
     needs_browser = not (args.verify or getattr(args, "open_browser", False))
     # Whoever ends up refused sees this: which config - and so which account -
     # is holding the slot. No secret, just the file the other run was told

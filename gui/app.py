@@ -333,6 +333,27 @@ def _busy_holder(app_dir: Path, account: str):
     return None
 
 
+def _lock_exempt(app_meta: dict, action: str) -> bool:
+    """Whether this action needs no browser, so must not wait on the lock
+    (or be refused because someone else holds it).
+
+    Mirrors simyo_docs.py's main(): `needs_browser = not (args.verify or
+    getattr(args, "open_browser", False))`. That check lives in the CLI,
+    which the panel must not import (see _busy_holder above), so this is a
+    second, small copy of the same rule rather than a shared import - if
+    you change one side's exemption, change this one to match, and vice
+    versa. It is derived from the action's actual resolved flags, not from
+    a hardcoded action-name list, so "login" is only exempt when it
+    resolves to --open-browser (a human signing in) and not when it
+    resolves to --login (which attaches over CDP and does need the slot).
+    """
+    if action not in ACTIONS:
+        return False
+    flags = [app_meta["login_flag"] if f == "__LOGIN__" else f
+             for f in ACTIONS[action]["flags"]]
+    return "--verify" in flags or "--open-browser" in flags
+
+
 # ---------------------------------------------------------------------------
 # Answering a prompt
 # ---------------------------------------------------------------------------
@@ -471,10 +492,16 @@ def api_run(app: str, account: str = "primary", action: str = "pilot"):
     # contract simyo_docs.py's own main() enforces on the CLI side, checked
     # here too because a panel restart is exactly the case a file-backed
     # lock (rather than the in-memory _RUNS dict below) exists to catch.
-    busy = _busy_holder(Path(meta["dir"]), account)
-    if busy:
-        raise HTTPException(409, f"{app} is already running as {busy}. "
-                                 f"This provider allows one session at a time.")
+    #
+    # _lock_exempt skips this for the same actions the CLI's own lock skips
+    # (--verify, and a Login that resolves to --open-browser): neither
+    # touches the shared browser session, so neither should queue behind,
+    # or be refused by, a run that is genuinely using it.
+    if not _lock_exempt(meta, action):
+        busy = _busy_holder(Path(meta["dir"]), account)
+        if busy:
+            raise HTTPException(409, f"{app} is already running as {busy}. "
+                                     f"This provider allows one session at a time.")
     cmd = _build_cmd(meta, account, action)
 
     # Deliberately an *async* generator. With a plain sync one, Starlette wraps
