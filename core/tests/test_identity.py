@@ -23,6 +23,18 @@ def test_anchors_are_the_oldest_three_sorted_and_deduped():
         rec(101, "2026-01-01"), rec(102, "2026-02-01"), rec(103, "2026-03-01")]
 
 
+def test_two_records_sharing_an_id_collapse_to_one_anchor():
+    """Youfone yields TWO documents per invoice - the Factuur and its
+    Specificaties (apps/youfone/youfone_site.py, module docstring point 2) -
+    and both carry the SAME invoice number and date, so an account's anchor
+    records include this exact shape: two entries, same id, same date. The
+    dedup here (`{r["id"]: r for r in _clean(records)}`) is keyed on `id`
+    alone, so the pair has to collapse to one anchor rather than spending two
+    of ANCHOR_COUNT's three slots on a single invoice."""
+    observed = [rec(555, "2026-08-14"), rec(555, "2026-08-14")]
+    assert identity.pick_anchors(observed) == [rec(555, "2026-08-14")]
+
+
 def test_nothing_recorded_is_not_a_verdict():
     assert identity.check([], [rec(101, "2026-01-01")]) == identity.UNKNOWN
 
