@@ -167,3 +167,62 @@ def test_config_saved_with_a_bom_still_loads(tmp_path):
     cfg = tmp_path / "config.json"
     cfg.write_text('{"owner": "Sam"}', encoding="utf-8-sig")
     assert storage.load_config(cfg)["owner"] == "Sam"
+
+
+def _blocked_input(*_args, **_kwargs):
+    raise AssertionError("ensure_owner must not call input() when unattended")
+
+
+def test_ensure_owner_skipped_when_unattended(tmp_path, monkeypatch):
+    """A scheduled run has no human attached, so `unattended=True` alone must
+    be enough to skip the prompt - it cannot depend on stdin happening to
+    look non-interactive, because a native scheduled run started from an
+    actual terminal has a real tty. `sys.stdin` is replaced with one that
+    claims to be a tty, so the interactive branch is genuinely open and only
+    `unattended` decides whether it is taken - and `input()` is replaced with
+    something that raises, so a regression that deleted the unattended check
+    fails this test with an assertion instead of hanging the suite on a real
+    prompt."""
+    monkeypatch.setattr("builtins.input", _blocked_input)
+    monkeypatch.setattr(storage.sys, "stdin",
+                        type("FakeTTY", (), {"isatty": staticmethod(lambda: True)})())
+    config = {"owner": ""}
+    result = storage.ensure_owner(config, tmp_path / "config.json", unattended=True)
+    assert result["owner"] == ""
+
+
+def test_paths_include_the_sentinel_file(tmp_path):
+    paths = storage.Paths(tmp_path / "out")
+    assert paths.sentinel_json == tmp_path / "out" / "sentinel.json"
+
+
+def test_session_lifetime_defaults_to_long(tmp_path):
+    """None means 'holds for days': the majority case, safe on plain cron."""
+    assert document_spec(tmp_path).session_lifetime_minutes is None
+
+
+def test_session_lifetime_can_be_declared(tmp_path):
+    spec = AppSpec(provider="Simyo", project_dir=tmp_path, kind=DOCUMENT,
+                   folders=[Folder("statements", "Statements")],
+                   routes={"Statement": "statements"},
+                   session_lifetime_minutes=10)
+    assert spec.session_lifetime_minutes == 10
+
+
+def test_a_nonsense_session_lifetime_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="session_lifetime_minutes"):
+        AppSpec(provider="Simyo", project_dir=tmp_path, kind=DOCUMENT,
+                folders=[Folder("statements", "Statements")],
+                routes={"Statement": "statements"},
+                session_lifetime_minutes=0)
+
+
+def test_concurrency_defaults_to_one(tmp_path):
+    assert document_spec(tmp_path).concurrency == 1
+
+
+def test_a_nonsense_concurrency_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="concurrency"):
+        AppSpec(provider="Simyo", project_dir=tmp_path, kind=DOCUMENT,
+                folders=[Folder("statements", "Statements")],
+                routes={"Statement": "statements"}, concurrency=0)

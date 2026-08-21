@@ -22,6 +22,16 @@ discovery.json
 progress.json
 new-this-run.txt
 run-summary.txt
+# sentinel.json is the same class of data as progress.json: it holds the
+# identity anchors of a real account - real invoice numbers and their dates -
+# plus when that session was last alive. It lands in the working tree on a
+# native install, because every shipped config.example.json says
+# "output_dir": ".".
+sentinel.json
+sentinel.json.*
+# One file per live session slot, named <provider>.<n>.lock, holding the
+# config filename of whoever is running. Natively they land beside the app.
+.locks/
 # ...and any hand-made copy of them. A file like "discovery.json.pre-fix" or
 # "progress.json.bak" holds the same real account data as the original, but
 # the exact-name rules above do not cover it - one was nearly committed while

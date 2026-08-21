@@ -21,7 +21,9 @@ import re
 import secrets
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict
 from urllib.parse import urlsplit
 
@@ -47,8 +49,19 @@ APPS_ROOT = Path(os.environ.get("APPS_ROOT", str(HERE.parent / "apps")))
 
 # action -> argparse flags. run_all / resume get --yes so they don't block on a
 # confirmation prompt. Login is resolved per-app (open-browser vs login).
+#
+# `adopt` is the one command that records which account a config's tab belongs
+# to, and it exists here because a human-initiated, interactive, once-per-
+# account decision is exactly what this panel is for. Without it an upgraded
+# install had no way through the identity gate at all: an app that requires
+# adopted anchors refuses Pilot, Discover, Run All and Resume until they exist,
+# and nothing in the panel could create them. It carries a real command
+# (--discover) because --adopt-identity on its own is a modifier, not an
+# action, and would only print the help.
 ACTIONS = {
     "login":    {"label": "Login",    "flags": ["__LOGIN__"]},
+    "adopt":    {"label": "Adopt identity",
+                 "flags": ["--discover", "--adopt-identity"]},
     "discover": {"label": "Discover", "flags": ["--discover"]},
     "pilot":    {"label": "Pilot",    "flags": ["--pilot"]},
     "all":      {"label": "Run All",  "flags": ["--all", "--yes"]},
@@ -93,6 +106,31 @@ def _same_origin_only(request: Request) -> None:
             raise HTTPException(403, "cross-origin request refused")
 
 
+CORE_DIR = HERE.parent / "core"
+
+
+def _core():
+    """paperpull_core's modules, or None if they cannot be loaded.
+
+    Guarded, because gui/requirements.txt is the only thing a native install
+    promises to have installed and paperpull_core lives in a sibling directory
+    the panel does not otherwise import from. Every caller below decides for
+    itself what None means - _python_for degrades, api_due refuses - because
+    those are genuinely different answers.
+
+    One place, so `sys.path` is touched once. Two call sites used to insert
+    CORE_DIR on every request, and `sys.path` on a panel left open for a week
+    grew a copy of that string per click, forever.
+    """
+    if str(CORE_DIR) not in sys.path:
+        sys.path.insert(0, str(CORE_DIR))
+    try:
+        from paperpull_core import appload, due as due_mod, locks
+    except Exception:
+        return None
+    return SimpleNamespace(appload=appload, due=due_mod, locks=locks)
+
+
 def _entry_script(app_dir: Path):
     for p in sorted(app_dir.glob("*.py")):
         if ENTRY_RE.match(p.name):
@@ -101,15 +139,18 @@ def _entry_script(app_dir: Path):
 
 
 def _venv_python(app_dir: Path):
-    r"""The app's own interpreter, on either venv layout.
+    r"""The app's own interpreter, if it has one - appload.venv_python's answer.
 
-    Windows puts it in .venv\Scripts\python.exe; macOS and Linux use
-    .venv/bin/python."""
-    for rel in ("Scripts/python.exe", "bin/python", "bin/python3"):
-        candidate = app_dir / ".venv" / rel
-        if candidate.exists():
-            return candidate
-    return None
+    The rule (Windows puts it in .venv\Scripts\python.exe; macOS and Linux use
+    .venv/bin/python) lives in appload because the scheduler needs the same
+    answer and, having its own copy, did not have it: it launched every app on
+    `sys.executable`, where playwright and paperpull_core are not installed.
+
+    None when the core cannot be loaded, which reads as "no venv" - the
+    container's own situation, where one interpreter serves everything.
+    """
+    core = _core()
+    return core.appload.venv_python(app_dir) if core else None
 
 
 def _python_for(app_dir: Path) -> str:
@@ -163,17 +204,79 @@ def _config_dir(app_dir: Path) -> Path:
     return (root / app_dir.name) if root else app_dir
 
 
-def _accounts(app_dir: Path):
-    accts = ["primary"]
+def _account_names(app_dir: Path):
+    """Just the labels: 'primary' plus every config.<name>.json."""
+    names = ["primary"]
     cfg_dir = _config_dir(app_dir)
     if not cfg_dir.is_dir():
-        return accts
+        return names
     for cfg in sorted(cfg_dir.glob("config.*.json")):
         if cfg.name == "config.example.json":
             continue
-        name = cfg.name[len("config."):-len(".json")]
-        accts.append(name)
-    return accts
+        names.append(cfg.name[len("config."):-len(".json")])
+    return names
+
+
+def _sentinel_for(app_dir: Path, account: str) -> dict:
+    """This account's sentinel record, or {} if there is none yet.
+
+    Read as plain JSON on purpose: this is the app list, the one thing the
+    panel must always be able to draw, and it must not depend on importing an
+    app's code or the core - a native install promises gui/requirements.txt
+    and nothing else. paperpull_core.appload resolves the same relative
+    output_dir the same way for the scheduler's due list; this stays a
+    separate read rather than a call into it because everything in this
+    function has to work with no core at all. If the resolution rule ever
+    changes, both sides change.
+    """
+    name = "config.json" if account == "primary" else f"config.{account}.json"
+    cfg_path = _config_dir(app_dir) / name
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+        out_dir = Path(cfg["output_dir"])
+        if not out_dir.is_absolute():
+            # Every shipped config.example.json has "output_dir": "." - which
+            # is meaningful for the downloader subprocess, launched with
+            # cwd=app_dir (see the Popen call below), but this long-running
+            # panel process has one cwd of its own (wherever uvicorn started)
+            # that is not any app's directory. So a relative path has to be
+            # resolved against app_dir, exactly like the subprocess sees it.
+            out_dir = app_dir / out_dir
+        raw = (out_dir / "sentinel.json").read_text(encoding="utf-8")
+        decoded = json.loads(raw)
+        return decoded if isinstance(decoded, dict) else {}
+    except Exception:
+        # No config, no output dir yet, no sentinel, or unreadable: all of
+        # which mean "nothing known", never an error the panel should show.
+        return {}
+
+
+def _accounts(app_dir: Path):
+    out = []
+    for name in _account_names(app_dir):
+        sent = _sentinel_for(app_dir, name)
+        session = sent.get("session") or {}
+        identity_rec = sent.get("identity") or {}
+        anchors = identity_rec.get("anchors")
+        out.append({
+            "name": name,
+            "state": session.get("state", ""),
+            "last_alive": session.get("last_verified_alive", ""),
+            "parked_reason": session.get("parked_reason", ""),
+            "identified": bool(anchors),
+            # The anchors themselves, not just whether there are any. Adopting
+            # an identity is the one moment a run takes on trust that the tab
+            # it is reading really is this config's account, so the person who
+            # did the adopting has to be able to see WHAT was recorded and
+            # check it once - a boolean cannot be checked against anything.
+            # Nothing private: an anchor is a document number and its date,
+            # both already in this account's index CSV.
+            "anchors": [{"id": str(a.get("id", "")),
+                         "date": str(a.get("date", ""))}
+                        for a in anchors if isinstance(a, dict)]
+            if isinstance(anchors, list) else [],
+        })
+    return out
 
 
 def discover_apps():
@@ -217,7 +320,7 @@ def api_apps():
 def _build_cmd(app_meta: dict, account: str, action: str):
     if action not in ACTIONS:
         raise HTTPException(400, "unknown action")
-    if account not in app_meta["accounts"]:
+    if account not in [a["name"] for a in app_meta["accounts"]]:
         raise HTTPException(400, "unknown account")
     flags = []
     for f in ACTIONS[action]["flags"]:
@@ -234,6 +337,94 @@ def _build_cmd(app_meta: dict, account: str, action: str):
         # is the default and needs no flag.
         cmd += ["--config", name]
     return cmd
+
+
+def _busy_holder(app_dir: Path, account: str):
+    """Who holds this provider's session slot right now, if anyone.
+
+    Guarded (see _core): if the core can't be loaded this degrades to
+    "cannot tell" (None) rather than breaking the Run button for every app
+    over one provider's lock code.
+
+    Two things here are deliberately not computed locally. The directory comes
+    from appload.lock_dir, which is the same call simyo_docs.py's main() makes,
+    so the panel and the CLI cannot land on different, invisible-to-each-other
+    lock directories and fail to contend for the same slot - the one failure
+    mode that would make this whole feature silently do nothing. And the
+    staleness rule comes from locks.live_holders, the same rule locks.acquire
+    applies: a lock older than STALE_AFTER belongs to something that died.
+
+    That second one is why this reads live_holders and not holders. Nothing
+    releases a slot on SIGKILL or on a container being recreated, and the CLI
+    recovers from that by taking the stale lock over - so a panel that counted
+    every file it found refused this provider's Run button from the first
+    unclean exit until the end of time, while a terminal three feet away could
+    run the same account fine. `account` is unused for the same reason the
+    lock is: the slot is per provider, and the parameter stays because every
+    other check in api_run is per account.
+    """
+    core = _core()
+    if core is None:
+        return None
+    try:
+        spec = core.appload.load_spec(app_dir)
+        held = core.locks.live_holders(core.appload.lock_dir(app_dir),
+                                       spec.slug, spec.concurrency)
+        if len(held) >= spec.concurrency and held:
+            return held[0].get("holder") or "another run"
+    except Exception:
+        return None
+    return None
+
+
+def _lock_exempt(app_meta: dict, action: str) -> bool:
+    """Whether this action needs no browser, so must not wait on the lock
+    (or be refused because someone else holds it).
+
+    Mirrors simyo_docs.py's main(): `needs_browser = not (args.verify or
+    getattr(args, "open_browser", False))`. That check lives in the CLI,
+    which the panel must not import (see _busy_holder above), so this is a
+    second, small copy of the same rule rather than a shared import - if
+    you change one side's exemption, change this one to match, and vice
+    versa. It is derived from the action's actual resolved flags, not from
+    a hardcoded action-name list, so "login" is only exempt when it
+    resolves to --open-browser (a human signing in) and not when it
+    resolves to --login (which attaches over CDP and does need the slot).
+    """
+    if action not in ACTIONS:
+        return False
+    flags = [app_meta["login_flag"] if f == "__LOGIN__" else f
+             for f in ACTIONS[action]["flags"]]
+    return "--verify" in flags or "--open-browser" in flags
+
+
+@app.get("/api/due", dependencies=[Depends(_same_origin_only)])
+def api_due():
+    """Which accounts are due, most perishable session first.
+
+    Same inputs and the same ordering `python tools/due.py` would print, so
+    the panel and that script never disagree about who is waiting. This is
+    what "Start sitting" walks: sign in, run, tear down, sign in to the
+    next - one provider session at a time, most-perishable-first so a
+    ten-minute session never queues behind nine that last for days.
+    Read-only: it opens no browser and starts nothing.
+
+    The import is guarded for the same reason _busy_holder's is (see _core):
+    gui/requirements.txt is all a native install promises to have, and
+    paperpull_core lives in a sibling directory the panel does not otherwise
+    depend on. Unlike _busy_holder, though, failure here is not something to
+    quietly paper over with a default - returning an empty "due": [] would
+    read as "nothing is due today", a different and false claim from "the
+    panel cannot tell you what is due". So this reports a 503 instead, and
+    the page's Start Sitting button treats the two answers differently: an
+    empty list means stand down, a failed fetch means something is broken.
+    """
+    core = _core()
+    if core is None:
+        raise HTTPException(503, "paperpull_core is not importable here")
+    accounts = core.appload.accounts(APPS_ROOT, _config_root())
+    today = date.today().isoformat()
+    return {"today": today, "due": core.due.plan(accounts, today)}
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +507,15 @@ def _stop_run(run_id: str) -> None:
     indefinitely, and "close the tab" should not be the only way out of that.
     Stopping is safe - downloaded_ok is only written after a document is
     saved, so a re-run resumes and re-fetches nothing.
+
+    terminate() is SIGTERM, and the apps handle it (simyo_docs.py's
+    `_stop_on_sigterm`) so that their `finally` blocks run and this provider's
+    session slot is released on the way out. Before that, one press of this
+    button left the lock file behind and _busy_holder refused the next run for
+    six hours - which the page then reported as "connection lost", a wrong
+    story about a wrong problem. _busy_holder now ages a stale lock out too,
+    so the two fixes cover each other: this is the tidy exit, that is the
+    backstop for a process that never got to run any code at all.
     """
     _live_run(run_id).terminate()
 
@@ -368,6 +568,22 @@ def api_run(app: str, account: str = "primary", action: str = "pilot"):
     if app not in apps:
         raise HTTPException(404, "unknown app")
     meta = apps[app]
+    # Refuse before ever building a command: starting a second Popen for a
+    # provider that only tolerates one signed-in session would sign the
+    # first one out from under whichever run got there first - the same
+    # contract simyo_docs.py's own main() enforces on the CLI side, checked
+    # here too because a panel restart is exactly the case a file-backed
+    # lock (rather than the in-memory _RUNS dict below) exists to catch.
+    #
+    # _lock_exempt skips this for the same actions the CLI's own lock skips
+    # (--verify, and a Login that resolves to --open-browser): neither
+    # touches the shared browser session, so neither should queue behind,
+    # or be refused by, a run that is genuinely using it.
+    if not _lock_exempt(meta, action):
+        busy = _busy_holder(Path(meta["dir"]), account)
+        if busy:
+            raise HTTPException(409, f"{app} is already running as {busy}. "
+                                     f"This provider allows one session at a time.")
     cmd = _build_cmd(meta, account, action)
 
     # Deliberately an *async* generator. With a plain sync one, Starlette wraps
@@ -534,7 +750,13 @@ HTML = r"""<!doctype html>
     <select id="app"></select>
     <label for="account">Account</label>
     <select id="account"></select>
+    <p class="hint" id="identity"></p>
     <div class="actions" id="actions"></div>
+    <button class="primary" id="sit" style="width:100%; margin-top:12px;">▶ Start sitting</button>
+    <p class="hint">One sitting walks every <em>due</em> account across every
+       app, most perishable session first — sign in when asked, watch it run
+       here, then sign in to the next. This is for the providers whose
+       session dies before a cron job would ever catch it awake.</p>
     <a class="desktop" id="desktop" target="_blank" rel="noopener">🖥 Open browser desktop ↗</a>
     <p class="hint" id="steps">1. <b>Login</b> opens a browser — sign in yourself and leave it open.<br>
        2. <b>Pilot</b> tests the newest few.<br>
@@ -570,6 +792,14 @@ HTML = r"""<!doctype html>
 </footer>
 <script>
 let META = null, es = null, RUN = null, promptTimer = null, promptFrom = 0, stopping = false;
+// A sitting walks several accounts, one run at a time. `sitting` is true for
+// the whole walk; `sittingAbort` is how Stop (see stopRun) or a closed
+// confirm() ends the whole walk rather than just the run in flight.
+// `onRunEnd` is the resolver of whichever run's promise is currently
+// outstanding - set by startRun, called once by endRun - which is how a
+// sitting's `await startRun(...)` wakes up only once the run has actually
+// ended, never before.
+let sitting = false, sittingAbort = false, onRunEnd = null;
 const $ = id => document.getElementById(id);
 const actionButtons = () => document.querySelectorAll('#actions button');
 
@@ -603,11 +833,40 @@ async function load() {
 function onApp() {
   const m = META.apps[$('app').value];
   const accSel = $('account'); accSel.innerHTML = '';
-  for (const a of m.accounts) accSel.append(new Option(a, a));
+  const accountLabel = (a) => {
+    if (!a.identified) return a.name + ' · unidentified';
+    if (a.state === 'parked') return a.name + ' · needs sign-in';
+    if (a.state === 'warm') return a.name + ' · alive ' + (a.last_alive || '').slice(0, 16);
+    return a.name;
+  };
+  for (const a of m.accounts) accSel.append(new Option(accountLabel(a), a.name));
+  accSel.onchange = showIdentity;
+  showIdentity();
   const warn = $('venvwarn');
   if (!m.has_venv && META.expect_venvs) { warn.style.display='block';
     warn.textContent = '⚠ No .venv in this app yet — run setup.bat there first, or output may show import errors.'; }
   else warn.style.display='none';
+}
+// What "this account" was proved to be, spelled out. Adopting an identity is
+// the one moment a run takes on trust that the tab it can see really is this
+// config's account - so the anchors it recorded are shown once, here, for the
+// person who did the adopting to check against the invoices they can see in
+// the browser. textContent throughout: an anchor id is provider data.
+function showIdentity() {
+  const m = META.apps[$('app').value];
+  const a = (m.accounts || []).find(x => x.name === $('account').value);
+  const el = $('identity');
+  if (!a) { el.textContent = ''; return; }
+  if (!a.identified) {
+    el.textContent = '⚠ No identity recorded for this account yet. Sign in, '
+      + 'check the browser really shows THIS account, then press Adopt '
+      + 'identity once. Runs that file documents refuse until you have.';
+    return;
+  }
+  if (!a.anchors.length) { el.textContent = ''; return; }
+  el.textContent = 'Identity: this account is recognised by '
+    + a.anchors.map(x => `${x.id} (${x.date})`).join(', ')
+    + '. Check those belong to it.';
 }
 function setStatus(cls, text) { $('dot').className = 'dot ' + cls; $('statustext').textContent = text; }
 
@@ -668,6 +927,11 @@ async function answer() {
 async function stopRun() {
   if (!RUN) return;
   stopping = true;
+  // Mid-sitting, Stop has to end the whole sitting - not just this one run,
+  // leaving the loop free to sign the next account in regardless. Otherwise
+  // the one button a person reaches for to bail out would not actually bail
+  // out of anything but the current account.
+  if (sitting) sittingAbort = true;
   setStatus('run', 'stopping…');
   await fetch('/api/stop', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -687,16 +951,59 @@ function endRun(cls, text) {
   clearPrompt();
   $('reply').hidden = true;
   actionButtons().forEach(b => b.disabled = false);
+  // Only re-enable Start Sitting if no sitting is in progress. Between two
+  // accounts' runs a sitting is still live (it is inside a blocking
+  // confirm() for the next one), and Start Sitting must stay disabled for
+  // that whole stretch too - not just while a subprocess is actually
+  // running - or a second click there would re-enter startSitting.
+  if (!sitting) $('sit').disabled = false;
   if (es) { es.close(); es = null; }
+  // This is the one place a run is decided to be over - reached from the
+  // server's "done" event and from a lost connection alike (see startRun).
+  // Waking a sitting's `await startRun(...)` here, rather than anywhere
+  // else, is what stops it from ever signing the next account in while this
+  // one's subprocess might still be holding the provider's session slot.
+  if (onRunEnd) { const resolve = onRunEnd; onRunEnd = null; resolve(); }
 }
 function run(action) {
-  if (es) es.close();
-  const app = $('app').value, account = $('account').value;
+  startRun($('app').value, $('account').value, action);
+}
+// Starts one run and returns a Promise that resolves once endRun has been
+// called for it - i.e. once the server has actually said "done" (or the
+// connection was lost), never merely once the request went out. A sitting
+// awaits this before touching the next account.
+//
+// There is no "end" SSE event in this protocol, only "run" (the very first
+// frame, carrying the run id) and "done" (the last, carrying the exit code,
+// sent right before the server closes the stream - see the `finally` in
+// api_run's stream()). onerror below is therefore not the normal
+// end-of-run signal, it is what fires if the connection drops with no
+// "done" ever having arrived. That is also why endRun always closes `es`
+// itself: an EventSource whose stream the *server* ends still auto-reconnects
+// unless something on this side calls .close() first.
+function startRun(app, account, action) {
+  if (es) {
+    // With the fixes below (startSitting's synchronous re-entrancy guard,
+    // and Start Sitting plus every action button disabled for as long as
+    // any run - manual or sitting-driven - is live) every legitimate call
+    // site now waits for a previous run to end before starting another, so
+    // this should be unreachable. If it ever fires anyway, closing the old
+    // stream silently and reassigning `onRunEnd` would abandon whoever was
+    // still awaiting it, mid-run, with nothing to show for it - so this is
+    // surfaced loudly instead of let it happen quietly.
+    console.error('startRun called while a previous run was still live; '
+                 + 'closing it now. This should not be reachable.');
+    es.close();
+  }
   $('console').textContent = '';
   promptFrom = 0; stopping = false;
   $('answer').value = ''; syncAnswerButton(); clearPrompt();
   setStatus('run', `running ${action} — ${app} / ${account}`);
   actionButtons().forEach(b => b.disabled = true);
+  // Disabled here too (not just inside startSitting) so a manual run alone
+  // - no sitting involved at all - also blocks Start Sitting from being
+  // clicked underneath it.
+  $('sit').disabled = true;
   es = new EventSource(`/api/run?app=${encodeURIComponent(app)}&account=${encodeURIComponent(account)}&action=${action}`);
   // Arrives before any output, so even a first-line prompt can be answered.
   es.addEventListener('run', e => { RUN = e.data; $('reply').hidden = false; });
@@ -711,7 +1018,85 @@ function run(action) {
     endRun(code === '0' ? 'ok' : 'err', code === '0' ? 'finished' : `exited (code ${code})`);
   });
   es.onerror = () => { if (es) endRun('err', 'connection lost'); };
+  return new Promise(resolve => { onRunEnd = resolve; });
 }
+
+// -- the sitting: one account at a time, most perishable session first -----
+//
+// The scarce resource here is not CPU, it is a person's attention for
+// signing in. So this walks /api/due in the order it comes back (due.plan's
+// own ordering, most-perishable-session-first) and, for each account, asks
+// for a fresh sign-in and then awaits the FULL run - teardown included -
+// before ever asking about the next one. Two runs on one provider at once
+// would sign each other's session out from under the other; that is the one
+// outcome this whole feature exists to prevent.
+async function startSitting() {
+  // Re-entrancy guard - and it MUST be the very first statement, before any
+  // `await` in this function. A second click on Start Sitting calls this
+  // function again; JS runs synchronously up to the first await, so
+  // `sitting` is already true by the time that second call is dispatched
+  // (dispatched, at the earliest, once this call yields at the `await
+  // fetch` below). Putting this check anywhere later - after the fetch,
+  // after building the queue - leaves exactly that window open: a second
+  // invocation would reach confirm()/startRun() for the same account the
+  // first invocation is still running, and startRun's `if (es) es.close()`
+  // would silently tear down the first invocation's live run and steal its
+  // `onRunEnd`, leaving the first `await startRun(...)` never resolved.
+  if (sitting) return;
+  sitting = true;
+  $('sit').disabled = true;
+  try {
+    const res = await fetch('/api/due');
+    if (!res.ok) {
+      // A failed fetch (503: paperpull_core is not importable here) is not
+      // the same fact as "nobody is due" - it means the panel cannot tell,
+      // and must not be read as "stand down".
+      alert('Cannot read the due list here.');
+      return;
+    }
+    const {due} = await res.json();
+    // A provider with no declared session lifetime can wait for a plain
+    // cron job; only a perishable one needs a person sitting down for it.
+    const queue = due.filter(a => a.session_lifetime_minutes !== null);
+    if (!queue.length) { alert('Nothing needs a person right now.'); return; }
+    sittingAbort = false;
+    let completed = 0;
+    for (const a of queue) {
+      if (sittingAbort) break;
+      // Sign-in first: a perishable session has to be fresh when the pull
+      // runs, and only a person can make it fresh. Declining here - or
+      // pressing Stop once the run below has started - ends the whole
+      // sitting, not just this one account; `completed` below is what
+      // tells the difference between that and finishing the whole queue.
+      if (!confirm(`Sign in to ${a.app} (${a.account}) in the browser desktop, `
+                 + `in ONE tab. Press OK when you are signed in.`)) break;
+      if (sittingAbort) break;
+      // 'all', not 'resume'. Resume selects from the discovery.json this
+      // account already has on disk and never asks the provider what exists,
+      // so a sitting built on it spent the sign-in it had just asked a person
+      // for, printed "Nothing to resume", and called itself done. Run All
+      // discovers first, and every app's own "already downloaded" memory
+      // skips what is on disk - so this is discover-plus-new-only, which is
+      // what a sitting was always meant to be.
+      await startRun(a.app, a.account, 'all');
+      completed++;
+    }
+    // A sitting cut short - Cancel on a sign-in prompt, or Stop mid-run -
+    // is not "done": most of the point of this feature is telling a person
+    // what still needs them, and treating a half-finished sitting as
+    // complete would say the opposite of that.
+    if (completed === queue.length) {
+      alert('Sitting done.');
+    } else {
+      alert(`Sitting stopped after ${completed} of ${queue.length} `
+          + `account(s) - ${queue.length - completed} still need a person.`);
+    }
+  } finally {
+    sitting = false;
+    $('sit').disabled = false;
+  }
+}
+$('sit').onclick = startSitting;
 load();
 </script>
 </body>

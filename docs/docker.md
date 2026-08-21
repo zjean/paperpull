@@ -24,9 +24,11 @@ never sees a password.
                     └── pw-artifacts (shared) ──┘
 ```
 
-Two containers. The bridge into Chrome's DevTools port is an s6 service inside
-the browser rather than a container of its own, so its lifecycle is the
-browser's — there is no third thing to remember to restart.
+Two containers, plus an optional `scheduler` — the same image as `paperpull`
+again, running one unattended pass a day and serving nothing (see
+[Scheduling](#scheduling)). The bridge into Chrome's DevTools port is an s6
+service inside the browser rather than a container of its own, so its
+lifecycle is the browser's — there is nothing extra to remember to restart.
 
 ## Setup
 
@@ -123,6 +125,135 @@ For a second person's accounts, add a second `browser` service with its own
 `config.<name>.json` at it. Drop the file into `./config/<app>/` and the panel
 offers that account immediately — it reads the directory on each request, so no
 restart is needed.
+
+### First run after upgrading: adopt each account's identity
+
+If you already had PaperPull running before this version, do this once per
+account before anything else.
+
+A run now refuses to file documents until it can prove that the tab it is
+reading really is the account its config names. One Chrome holds every
+provider's session here, and a tab is found by matching the provider's host —
+so with two accounts of the same provider signed in, a run could otherwise
+read the wrong tab and file its documents under this config's owner, silently.
+The proof is a fingerprint of documents the account is *known* to own, and on
+an existing install nothing has recorded one yet, so every action that files a
+document refuses with `Cannot tell which account this tab belongs to`.
+
+Recording it is deliberately a thing you do, watching, once:
+
+1. Sign in to the provider on the browser desktop, in **one** tab, and check
+   the page really shows the account this config is for.
+2. In the panel, pick that app and account and press **Adopt identity**.
+3. Read back what it recorded — the panel lists the anchors under the account
+   picker, and it is the one moment those are taken on trust. If they are not
+   this account's documents, you adopted the wrong tab: sign in to the right
+   account and press it again.
+
+Or from a shell, the same thing:
+
+```bash
+docker compose run --rm paperpull \
+    python apps/simyo/simyo_docs.py --discover --adopt-identity \
+    --config /config/simyo/config.json
+```
+
+It is never done for you, and never done unattended: an unattended run that
+cannot prove an identity parks the account and exits 0, so it waits for you
+rather than guessing.
+
+### Scheduling
+
+The `scheduler` service is a third, optional container. It runs the same
+image as the panel and mounts the same `./config` and `./data`, but it has no
+web UI and no Docker socket — it invokes an app's CLI directly, the same way
+you would type it yourself, once a day.
+
+What it types is `--unattended --all --yes`. `--all` is not an overreach:
+it is the only action that asks the provider what exists, where `--resume`
+selects from the `discovery.json` an account already has and so could never
+fetch an invoice nobody had seen yet. Each app's own "already downloaded"
+memory (`progress.json`) skips what is on disk, so a nightly pass is
+discover-plus-anything-new. `--yes` answers the confirmation prompt that is
+the only reason `--all` ever needed a person in the room.
+
+It reaches the browser exactly the way the panel does, and for the same
+reason: the compose file gives it `command`, not `entrypoint`, so the image's
+own `docker/entrypoint.sh` still runs first — the same file that opens the
+socat bridge to the browser's DevTools port and seeds `/config` for the
+panel. Only once that is done does the entrypoint hand off to
+`tools/schedule.py`. Overriding the entrypoint instead would start the
+scheduler with no route to the browser at all, silently, since nothing here
+would fail until an app actually tried to attach.
+
+It only starts a provider whose session lasts for days
+(`session_lifetime_minutes` is `None` in that app's `storage.py`) *and* whose
+entry script already understands `--unattended` — detected by reading the
+script's own text for the flag, the same trick the panel uses to detect
+`--open-browser`. That second condition matters on its own: `--unattended` is
+added to an app one provider at a time, in a later change, once someone
+actually wants that provider scheduled. Until then the scheduler skips it and
+says so on one line — `does not support --unattended yet` — rather than
+either crashing or pretending it ran. Today that line fires for every patient
+app except Simyo, and Simyo is the one provider that can never take this path
+at all (below) — so the honest state of a fresh install is a scheduler that
+runs nothing and explains why, for every account, every day, until you or a
+later change adds the flag to an app you actually want pulled unattended.
+That is correct, not broken.
+
+**Simyo can never be in that first group.** Its session lasts ten minutes,
+which is shorter than a scheduled pass can rely on finding it alive; a
+provider that declares a session lifetime is never started here, on any pass,
+no matter what flags its script has. Instead it is printed as
+`waiting for a person` — the scheduler's way of telling you, and whatever
+reads its log, that this account still needs the panel's **Pilot** or
+**Run All** with you sitting at the browser desktop.
+
+Set `PAPERPULL_SCHEDULE_HOUR` in `.env` to the local hour (0-23, `TZ` already
+set above) you want the daily pass to run. Pick one you are actually awake
+for: a run that parks an account or lists one as waiting is only actionable by
+a person, and 3am is not when you read logs. A value outside 0-23 is refused
+on startup with a sentence, rather than accepted into a comparison that can
+never be true — a scheduler that runs forever and does nothing.
+
+**How often an account is even considered** is `cadence_days`, and it goes in
+that account's own config — the same file as `output_dir`, i.e.
+`./config/<app>/config.json` (or `config.<account>.json` for a second
+account):
+
+```json
+{
+  "output_dir": "/data/simyo",
+  "cadence_days": 31
+}
+```
+
+It is the number of days that must pass after the newest document already
+downloaded before this account is due again. The default is 31, which suits a
+monthly biller. Widen it for a provider that is annoying to sign in to — a
+statement you only need every other month is two sittings a year instead of
+twelve — and narrow it for one that posts documents weekly. An account is
+always due if it has never run, and a parked account is always listed
+regardless, because only a person can un-park it.
+
+The `scheduler` service has no healthcheck: it serves no HTTP, so the image's
+own check (which curls the panel) would report it permanently unhealthy.
+`docker compose logs scheduler` is what says whether it is working.
+
+To see today's plan without waiting for the schedule, or to check what a
+parked account needs:
+
+```bash
+docker compose exec scheduler python /app/tools/due.py
+```
+
+This lists every due account, most perishable session first, and marks a
+parked one `PARKED - needs sign-in`. **A parked account is a state, not a
+failure.** It means an unattended run found the session already gone and
+exited 0 rather than guessing at a login — nothing crashed, nothing needs
+fixing in code. Open the browser desktop, sign back in to that provider, and
+the next pass — scheduled or a manual `--once` — picks it up from where it
+left off.
 
 ### Restarting things
 

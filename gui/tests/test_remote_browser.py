@@ -169,10 +169,22 @@ def fake_app(tmp_path):
     return app_dir
 
 
+def _names(accounts):
+    """The labels out of _accounts()'s dict-shaped entries.
+
+    _accounts() reports a dict per account (name, state, last_alive,
+    parked_reason, identified - see gui/app.py) so the panel can show session
+    state without a second read. These tests are about which accounts are
+    found and in what order, not about that per-account state, so they only
+    ever look at the name.
+    """
+    return [a["name"] for a in accounts]
+
+
 def test_accounts_read_from_the_app_dir_natively(monkeypatch, fake_app):
     monkeypatch.delenv("PAPERPULL_CONFIG_ROOT", raising=False)
     (fake_app / "config.spouse.json").write_text("{}", encoding="utf-8")
-    assert panel._accounts(fake_app) == ["primary", "spouse"]
+    assert _names(panel._accounts(fake_app)) == ["primary", "spouse"]
 
 
 def test_accounts_read_from_the_config_root_when_set(monkeypatch, fake_app, tmp_path):
@@ -184,21 +196,27 @@ def test_accounts_read_from_the_config_root_when_set(monkeypatch, fake_app, tmp_
     # A stray file in the app dir must not be picked up: the volume is the
     # source of truth once a config root is set.
     (fake_app / "config.stale.json").write_text("{}", encoding="utf-8")
-    assert panel._accounts(fake_app) == ["primary", "spouse"]
+    assert _names(panel._accounts(fake_app)) == ["primary", "spouse"]
 
 
 def test_a_new_account_file_is_seen_without_a_restart(monkeypatch, fake_app, tmp_path):
     root = tmp_path / "config"
     (root / "ally").mkdir(parents=True)
     monkeypatch.setenv("PAPERPULL_CONFIG_ROOT", str(root))
-    assert panel._accounts(fake_app) == ["primary"]
+    assert _names(panel._accounts(fake_app)) == ["primary"]
     (root / "ally" / "config.spouse.json").write_text("{}", encoding="utf-8")
-    assert panel._accounts(fake_app) == ["primary", "spouse"]
+    assert _names(panel._accounts(fake_app)) == ["primary", "spouse"]
 
 
 def _meta(app_dir, accounts):
+    # accounts: plain names, as every caller below passes them - wrapped
+    # into the {"name": ...} dict shape _build_cmd actually reads
+    # (app_meta["accounts"][i]["name"]), so these tests build a fake
+    # app_meta that matches discover_apps()'s real shape rather than the
+    # older list-of-strings one.
     return {"name": app_dir.name, "dir": str(app_dir), "script": "ally_docs.py",
-            "python": "python", "login_flag": "--login", "accounts": accounts,
+            "python": "python", "login_flag": "--login",
+            "accounts": [{"name": a} for a in accounts],
             "has_venv": False}
 
 

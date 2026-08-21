@@ -10,6 +10,13 @@
   "//4": "own. A second Mijn Simyo tab signs you out of the first.",
   "cdp_url": "http://localhost:9237",
 
+  "//5": "How many days after this account's newest invoice before it counts",
+  "//6": "as due again (tools/due.py, the panel's sitting, the scheduler).",
+  "//7": "31 suits a monthly biller. Widen it for a provider that is annoying",
+  "//8": "to sign in to; an account that has never run is always due, and a",
+  "//9": "parked one is always listed. Read from THIS file, per account.",
+  "cadence_days": 31,
+
   "document_types": [
     "Statement"
   ],

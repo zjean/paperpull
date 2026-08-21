@@ -13,6 +13,23 @@ Usage:
     python simyo_docs.py --diagnose    dump what the API returns (no downloads)
     python simyo_docs.py --dry-run     plan filenames, save nothing
 
+First run of a config, and only ever with you watching:
+    python simyo_docs.py --discover --adopt-identity
+                                       record WHICH account this config's tab
+                                       belongs to. Every other command refuses
+                                       to file anything until this has been
+                                       done once, because one shared Chrome
+                                       plus two Simyo accounts means a run
+                                       could otherwise file the wrong tab's
+                                       invoices under this config's owner.
+
+Scheduled runs (no person present):
+    python simyo_docs.py --unattended --all --yes
+                                       discover, then download anything new.
+                                       A dead session, a missing tab or an
+                                       unprovable identity parks the account
+                                       and exits 0 instead of asking.
+
 Filters: --year YYYY  --start-date YYYY-MM-DD  --end-date YYYY-MM-DD
          --max-docs N  --type Statement
 
@@ -31,13 +48,14 @@ import argparse
 import logging
 import random
 import re
+import signal
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from paperpull_core import doc_types, receipt_pdf
+from paperpull_core import appload, doc_types, receipt_pdf
 from paperpull_core import browser as browser_launcher
 import simyo_site as site
 from paperpull_core.models import State
@@ -45,7 +63,8 @@ from storage import (CsvFile, DOCUMENT_INDEX_COLUMNS, JsonStore, Paths,
                      atomic_write_text, build_pdf_filename, load_config,
                      now_iso, sanitize_component, unique_path)
 
-from storage import ensure_owner, PROJECT_DIR, set_filename_owner
+from storage import ensure_owner, PROJECT_DIR, SPEC, set_filename_owner
+from storage import identity, locks, sentinel
 log = logging.getLogger("simyo_docs")
 
 DONE_STATES = {State.COMPLETED.value, State.NO_RECEIPT_AVAILABLE.value}
@@ -137,6 +156,57 @@ class Document:
         return cls(**d)
 
 
+class Parked(Exception):
+    """This account needs a human, and no human is present.
+
+    Raised only in --unattended mode. Not a failure: main() turns it into a
+    printed line and exit code 0, so a scheduled run that finds a dead
+    session is quiet rather than alarming. Real failures keep their non-zero
+    codes, which is what keeps cron alerting worth reading.
+    """
+
+
+class Terminated(KeyboardInterrupt):
+    """SIGTERM arrived: something outside asked this run to stop.
+
+    It exists so that the ordinary way a run ends unwinds the stack like
+    every other way. Nothing here catches a signal by default, so SIGTERM
+    killed the process outright and the `finally` in `locks.hold` never ran -
+    which left this provider's session slot held by a process that no longer
+    existed, until STALE_AFTER (six hours) let the next run steal it. That is
+    the common path, not an edge case: the panel's Stop button sends SIGTERM,
+    and so does closing the browser tab a run is streaming to.
+
+    A subclass of KeyboardInterrupt because it is the same event as Ctrl+C
+    from the code's point of view - `process()` already unwinds cleanly on
+    one, saving progress on the way out - and only main() needs to tell the
+    two apart, to report the right exit code.
+    """
+
+
+def _stop_on_sigterm() -> None:
+    """Turn SIGTERM into an exception, so `finally` blocks run.
+
+    Installed by main() for every run. Raising from the handler is what makes
+    the difference: it unwinds through `locks.hold`, whose `finally` releases
+    this run's session slot, and through main()'s own `finally`, which saves
+    progress.json. Without it the slot survived the process, and gui/app.py's
+    Run button then refused this provider until the lock aged out.
+
+    Best-effort: signal.signal only works on the main thread, and SIGTERM
+    does not exist on every platform this code may be read on. A run that
+    cannot install the handler is exactly as safe as it was before, so a
+    failure here must not stop it starting.
+    """
+    def handler(signum, frame):
+        raise Terminated(f"signal {signum}")
+
+    try:
+        signal.signal(signal.SIGTERM, handler)
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
 class App:
     def __init__(self, args):
         self.args = args
@@ -147,7 +217,12 @@ class App:
         cfg_path = Path(args.config) if getattr(args, "config", None) \
             else (PROJECT_DIR / "config.json")
         self.config = load_config(cfg_path)
-        ensure_owner(self.config, cfg_path)
+        # unattended=...: this is the only app that can reach here with no
+        # human attached (see main()'s --unattended guard above _dispatch),
+        # so it is the only call site that has anything to tell ensure_owner
+        # beyond its own two-argument default.
+        ensure_owner(self.config, cfg_path,
+                     unattended=getattr(args, "unattended", False))
         set_filename_owner(self.config.get("owner", "") if self.config.get("owner_in_filename") else "")
         self.paths = Paths(Path(self.config["output_dir"]))
         self.paths.ensure()
@@ -157,6 +232,12 @@ class App:
         self.discovery = JsonStore(self.paths.discovery_json, self.paths.backups)
         self.progress.load()
         self.discovery.load()
+        # Which account this config belongs to, and whether its session was
+        # alive last time. No secret lives here - see paperpull_core.sentinel.
+        self.sentinel = JsonStore(self.paths.sentinel_json, self.paths.backups)
+        self.sentinel.load()
+        self._identity_verified = False
+        self._warm_marked = False
         self.index_csv = CsvFile(self.paths.document_index_csv,
                                  DOCUMENT_INDEX_COLUMNS, self.paths.backups)
         self.rules = doc_types.load_rules()
@@ -238,6 +319,13 @@ class App:
             return self._work_page
         found = site.find_signed_in_page(ctx)
         if found is None:
+            if getattr(self.args, "unattended", False):
+                # In the Docker layout, no tab open is the single most likely
+                # reason a scheduled run finds nothing - the human just
+                # hasn't signed in yet today. That is the ordinary case, not
+                # a failure, so this parks exactly like a dead session does
+                # rather than exiting non-zero and paging someone for it.
+                self._park("no signed-in tab")
             raise SystemExit(site.no_page_help())
         self._work_page = found
         # Nothing here is ever downloaded through the browser: the PDF arrives
@@ -259,20 +347,112 @@ class App:
     # -- session safety ----------------------------------------------------
 
     def check_session(self, page) -> None:
+        unattended = getattr(self.args, "unattended", False)
         challenge = site.detect_security_challenge(page)
         if challenge:
             self.progress.save(backup=True)
+            if unattended:
+                self._park(f"security challenge: {challenge}")
             print(f"\n!! {challenge}")
             print("Stopped. Please resolve it yourself in the browser window.")
             print("I will NOT attempt to bypass any security check.")
             ask("Press Enter once the page looks normal (or Ctrl+C to quit)... ")
         if site.looks_signed_out(page):
             self.progress.save(backup=True)
+            if unattended:
+                self._park("signed out")
             print("\n!! Simyo appears to have signed you out.")
             print("Please sign in again in the open browser window.")
             print("Sign in in the SAME tab, and do not open a second one -")
             print("a second Mijn Simyo tab signs you out of both.")
             ask("Press Enter after you are signed in... ")
+        if not self._warm_marked:
+            # Once per run, not once per document: check_session runs for
+            # every download, and JsonStore rewrites the whole file on each
+            # update. A scheduler only needs to know the session was alive at
+            # a known moment, and the panel's account list reads the same
+            # field - so this is recorded in interactive runs too, not just
+            # unattended ones.
+            sentinel.mark_warm(self.sentinel, now_iso())
+            self._warm_marked = True
+
+    def _park(self, reason: str):
+        sentinel.park(self.sentinel, reason, now_iso())
+        raise Parked(reason)
+
+    # -- account identity --------------------------------------------------
+
+    def _anchor_records(self, docs) -> List[dict]:
+        """The identity records a Simyo invoice list yields.
+
+        Only the invoice number and its date. Both are already written to
+        progress.json and the index CSV, so this records nothing new about the
+        account - no phone number, no customer number, no amount.
+        """
+        return [{"id": d.invoice_number, "date": d.date_text}
+                for d in docs if getattr(d, "invoice_number", "")]
+
+    def ensure_identity(self, page, docs=None) -> None:
+        """Refuse to file this tab's invoices unless it IS this account.
+
+        Every app here points at one shared Chrome in the Docker layout, and
+        `site.find_signed_in_page` picks a tab by host - so with a second Simyo
+        account signed in, this run could read the wrong tab and file its
+        invoices under this config's `owner`. Nothing downstream would notice,
+        because the owner comes from the config and never from the page.
+
+        Verified once per run: the invoice list is one API call, and the
+        download path would otherwise re-ask it for every document.
+        """
+        if self._identity_verified:
+            return
+        if docs is None:
+            docs = site.collect_documents(page)
+        observed = self._anchor_records(docs)
+        recorded = sentinel.read_anchors(self.sentinel)
+        verdict = identity.check(recorded, observed)
+        act = identity.action(verdict, getattr(self.args, "adopt_identity", False))
+
+        if act == identity.REFUSE:
+            if getattr(self.args, "unattended", False):
+                # The fourth "a human is needed" condition, and now the same
+                # shape as the other three (no tab, signed out, security
+                # challenge): park, exit 0, record why. It used to be the odd
+                # one out - a SystemExit, so exit 1 - which made it the only
+                # one that alarmed. And it is the one condition that can
+                # never fix itself: nothing a scheduler does will ever adopt
+                # an identity, so the old behaviour paged someone every night
+                # forever and left nothing on disk saying what for.
+                self._park(f"cannot prove this tab's identity ({verdict})")
+            if verdict == identity.MISMATCH:
+                raise SystemExit(
+                    "\n!! This tab is NOT the account this config belongs to.\n"
+                    f"   config : {getattr(self.args, 'config', None) or 'config.json'}\n"
+                    f"   owner  : {self.config.get('owner') or '(unset)'}\n"
+                    "   Refusing to file another account's invoices under that owner.\n"
+                    "   Sign THIS account in - in one tab, Simyo allows no more -\n"
+                    "   and run again.")
+            raise SystemExit(
+                f"\n!! Cannot tell which account this tab belongs to ({verdict}).\n"
+                "   Sign in yourself, check the browser really shows the account\n"
+                "   this config is for, then run once with --adopt-identity to\n"
+                "   record it. That is the one moment this is taken on trust, so\n"
+                "   it is never done for you and never done unattended.")
+
+        if act == identity.PROCEED:
+            # Re-anchor: Simyo drops invoices older than ~12 months, so the
+            # fingerprint has to roll forward with that window or it expires.
+            sentinel.write_anchors(self.sentinel, identity.pick_anchors(observed))
+            self._identity_verified = True
+            return
+
+        # ADOPT: no proof either way (nothing recorded yet, or every anchor
+        # has aged out of Simyo's window), and the human asked to record it.
+        sentinel.write_anchors(self.sentinel, identity.pick_anchors(observed))
+        self._identity_verified = True
+        print("Recorded this account's identity:")
+        for anchor in sentinel.read_anchors(self.sentinel):
+            print(f"  invoice {anchor['id']}  ({anchor['date']})")
 
     # -- commands ----------------------------------------------------------
 
@@ -411,6 +591,7 @@ class App:
         # clicked: the page is only checked for a live session first.
         self.check_session(page)
         docs = site.collect_documents(page)
+        self.ensure_identity(page, docs)
         for r in docs:
             n_new += self._record_rawdoc(r, r.pdf_url)
         self.discovery.save()
@@ -475,6 +656,15 @@ class App:
 
     def process(self, docs: List[Document], dry_run: bool = False):
         page = self.page()
+        # check_session before ensure_identity, not after: --resume reaches
+        # this without ever calling cmd_discover first, so ensure_identity
+        # would otherwise be the first thing to touch the page. A dead
+        # session makes collect_documents come back empty, which identity.py
+        # reads as UNKNOWN rather than "signed out" - the wrong diagnosis and
+        # the wrong exit path. Checking the session first gives check_session
+        # the first look, so a dead session is parked, not misreported.
+        self.check_session(page)
+        self.ensure_identity(page)
         for i, doc in enumerate(docs, 1):
             print(f"\n[{i}/{len(docs)}] {doc.date or '(no date)'}  "
                   f"{doc.category}  {doc.summary}")
@@ -490,6 +680,12 @@ class App:
                 self.download_one(page, doc, filename)
             except KeyboardInterrupt:
                 print("\nInterrupted. Progress saved; run --resume to continue.")
+                raise
+            except Parked:
+                # Not a per-document failure: the session died, and every
+                # remaining document would only repeat the same diagnosis.
+                # Let it propagate to main(), which prints one line and exits
+                # 0 - the whole point of parking instead of asking.
                 raise
             except Exception as e:
                 log.exception("Failed on %s", doc.key)
@@ -639,6 +835,18 @@ class App:
 
     def cmd_resume(self):
         self.stats["mode"] = "resume"
+        # Look at the session BEFORE deciding there is nothing to do. _select()
+        # reads discovery.json and nothing else, so a resume with an empty
+        # queue used to return without the page ever being touched - and
+        # check_session, the only thing that records `last_verified_alive`,
+        # never ran. The account then looked unchecked to due.py, came back due
+        # tomorrow, and asked a person to sign in again for the same nothing,
+        # every day. A session verified alive is a fact worth recording whether
+        # or not there turned out to be work behind it.
+        #
+        # process() checks again below; that costs nothing. The page is cached
+        # on the App and check_session writes the sentinel once per run.
+        self.check_session(self.page())
         docs = [d for d in self._select() if not self._already_done(d)]
         if not docs:
             print("Nothing to resume - everything in scope is complete.")
@@ -803,9 +1011,46 @@ def build_parser() -> argparse.ArgumentParser:
                          "'already downloaded' memory (rebuilds deleted files)")
     ap.add_argument("--config", help="use an alternate config file, e.g. "
                                      "config.spouse.json (separate account)")
+    ap.add_argument("--adopt-identity", action="store_true",
+                    help="record which account this config's tab belongs to. "
+                         "Do this once, on a tab you just signed in yourself.")
+    ap.add_argument("--unattended", action="store_true",
+                    help="never ask a question: if the session is dead, park "
+                         "this account and exit 0. For scheduled runs.")
     ap.add_argument("--open-browser", action="store_true",
                     help="launch a sign-in browser using this config's profile/port")
     return ap
+
+
+def _dispatch(app: "App", args) -> int:
+    """Run the one command argparse picked out, and nothing else.
+
+    Split out of main() so the lock in main() can wrap this call without
+    also wrapping the --unattended guard (which must run before App(args)
+    exists at all) or the cleanup in main()'s `finally` (which must run
+    whether or not the lock was ever taken).
+    """
+    if getattr(args, "open_browser", False):
+        app.cmd_open_browser()
+    elif args.login:
+        app.cmd_login()
+    elif args.discover:
+        app.cmd_discover()
+    elif args.pilot:
+        app.cmd_pilot()
+    elif args.all:
+        app.cmd_run("all")
+    elif args.resume:
+        app.cmd_resume()
+    elif args.verify:
+        app.cmd_verify()
+    elif args.diagnose:
+        app.cmd_diagnose()
+    elif args.dry_run:
+        app.cmd_run("dry-run")
+    else:
+        build_parser().print_help()
+    return 0
 
 
 def main(argv=None):
@@ -814,29 +1059,85 @@ def main(argv=None):
         if d and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
             print(f"Bad date '{d}': use YYYY-MM-DD")
             return 2
+    if args.unattended:
+        # These are the only commands that never need an answer from a person.
+        # --adopt-identity is the one moment identity is taken on trust and
+        # --open-browser is a human sitting down, so neither can appear here.
+        # Refusing beats hanging in a container at 3am.
+        #
+        # --all is admitted, but only WITH --yes. The confirmation prompt is
+        # the only reason --all ever needed a person, and --yes answers it
+        # ahead of time; without it this would block on a typed YES nobody is
+        # there to type. Admitting it is not a convenience: --all is the only
+        # command that asks the provider what exists (cmd_run calls
+        # cmd_discover first), and --resume selects from the local
+        # discovery.json alone. A schedule built on --resume could therefore
+        # never download a document it had not already seen - it spent a
+        # person's sign-in and printed "Nothing to resume". --all downloads
+        # everything IN SCOPE, and _already_done plus progress.json skip what
+        # is on disk, so a nightly pass is discover-plus-new-only.
+        #
+        # This check runs before App(args) below, on purpose: it needs no
+        # config, no sentinel and no browser, so a malformed unattended
+        # invocation is refused in milliseconds rather than after a config
+        # load that might itself fail. test_unattended.py depends on that
+        # ordering.
+        if not (args.discover or args.resume or args.verify
+                or (args.all and args.yes)):
+            print("--unattended works with --discover, --resume, --verify, "
+                  "or --all --yes.")
+            return 2
+        if args.adopt_identity:
+            print("--adopt-identity is never done unattended.")
+            return 2
+    # SIGTERM is how this run is normally asked to stop - the panel's Stop
+    # button, and the panel's own cleanup when the browser tab streaming a run
+    # is closed. Handled, so the `finally` in locks.hold below actually runs
+    # and this provider's session slot is given back.
+    _stop_on_sigterm()
     app = App(args)
+    # The slot this takes is per PROVIDER, not per account: Simyo signs the
+    # older session out, server-side, the moment a second one appears, so two
+    # accounts of this provider can never be pulled at the same moment.
+    #
+    # Which is why the directory is derived from the app, not from this
+    # account's config: appload.lock_dir answers it for the panel and the
+    # scheduler too (see its docstring), and a lock the three of them compute
+    # differently is a lock that guards nothing. It used to be read off
+    # output_dir's parent, which is a per-account, user-chosen path - so the
+    # panel and the CLI landed on different directories natively, and any
+    # second account pointed somewhere nested broke it in Docker as well.
+    lock_dir = appload.lock_dir(SPEC.project_dir)
+    # --verify only re-reads PDFs already saved on disk, and --open-browser is
+    # a human sitting down to sign in - neither one touches the shared,
+    # single-session browser tab this lock protects, so neither should have
+    # to queue behind it (or be blocked by a run that is genuinely using it).
+    # gui/app.py's _lock_exempt() carries a second, small copy of this same
+    # rule (the panel must not import this module) - change that one too if
+    # this one changes.
+    needs_browser = not (args.verify or getattr(args, "open_browser", False))
+    # Whoever ends up refused sees this: which config - and so which account -
+    # is holding the slot. No secret, just the file the other run was told
+    # to use.
+    holder = args.config or "config.json"
     try:
-        if getattr(args, "open_browser", False):
-            app.cmd_open_browser()
-        elif args.login:
-            app.cmd_login()
-        elif args.discover:
-            app.cmd_discover()
-        elif args.pilot:
-            app.cmd_pilot()
-        elif args.all:
-            app.cmd_run("all")
-        elif args.resume:
-            app.cmd_resume()
-        elif args.verify:
-            app.cmd_verify()
-        elif args.diagnose:
-            app.cmd_diagnose()
-        elif args.dry_run:
-            app.cmd_run("dry-run")
-        else:
-            build_parser().print_help()
-            return 0
+        if needs_browser:
+            with locks.hold(lock_dir, SPEC.slug, SPEC.concurrency, holder):
+                return _dispatch(app, args)
+        return _dispatch(app, args)
+    except locks.ProviderBusy as e:
+        print(f"\n!! {e}")
+        return 4
+    except Parked as e:
+        print(f"\nParked: {e}. This account needs a sign-in; nothing was run.")
+        return 0
+    except Terminated:
+        # Before KeyboardInterrupt, which this subclasses. 143 is the
+        # conventional 128 + SIGTERM, and it has to be non-zero: the panel
+        # tells "you stopped this" from "it finished by itself" by the exit
+        # code, and reporting a stopped run as finished would be a lie.
+        print("\nStopped on request. Progress saved; the session slot is free.")
+        return 143
     except KeyboardInterrupt:
         print("\nStopped by user. Progress saved.")
     finally:
