@@ -12,7 +12,11 @@ DATA_ROOT="${PAPERPULL_DATA_ROOT:-/data}"
 APPS="${APPS_ROOT:-/app/apps}"
 PORT="${PAPERPULL_PORT:-8765}"
 
-log() { echo "[paperpull] $*"; }
+# Diagnostics go to stderr, so that the stdout of whatever we exec into stays
+# clean. Otherwise a `docker run ... sh -c "ls /config"` — or anything piping a
+# one-off run's output — comes back with these lines mixed into it. Docker
+# captures both streams, so `docker compose logs` is unaffected.
+log() { echo "[paperpull] $*" >&2; }
 
 # ---------------------------------------------------------------------------
 # 1. The DevTools hop.
