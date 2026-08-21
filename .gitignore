@@ -87,3 +87,6 @@ Thumbs.db
 
 # Claude Code: the shared skills are tracked, per-machine settings are not.
 .claude/settings.local.json
+
+# Claude Code worktrees: isolated checkouts, never part of the tree.
+.claude/worktrees/
