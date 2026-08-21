@@ -48,13 +48,14 @@ import argparse
 import logging
 import random
 import re
+import signal
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from paperpull_core import doc_types, receipt_pdf
+from paperpull_core import appload, doc_types, receipt_pdf
 from paperpull_core import browser as browser_launcher
 import simyo_site as site
 from paperpull_core.models import State
@@ -163,6 +164,47 @@ class Parked(Exception):
     session is quiet rather than alarming. Real failures keep their non-zero
     codes, which is what keeps cron alerting worth reading.
     """
+
+
+class Terminated(KeyboardInterrupt):
+    """SIGTERM arrived: something outside asked this run to stop.
+
+    It exists so that the ordinary way a run ends unwinds the stack like
+    every other way. Nothing here catches a signal by default, so SIGTERM
+    killed the process outright and the `finally` in `locks.hold` never ran -
+    which left this provider's session slot held by a process that no longer
+    existed, until STALE_AFTER (six hours) let the next run steal it. That is
+    the common path, not an edge case: the panel's Stop button sends SIGTERM,
+    and so does closing the browser tab a run is streaming to.
+
+    A subclass of KeyboardInterrupt because it is the same event as Ctrl+C
+    from the code's point of view - `process()` already unwinds cleanly on
+    one, saving progress on the way out - and only main() needs to tell the
+    two apart, to report the right exit code.
+    """
+
+
+def _stop_on_sigterm() -> None:
+    """Turn SIGTERM into an exception, so `finally` blocks run.
+
+    Installed by main() for every run. Raising from the handler is what makes
+    the difference: it unwinds through `locks.hold`, whose `finally` releases
+    this run's session slot, and through main()'s own `finally`, which saves
+    progress.json. Without it the slot survived the process, and gui/app.py's
+    Run button then refused this provider until the lock aged out.
+
+    Best-effort: signal.signal only works on the main thread, and SIGTERM
+    does not exist on every platform this code may be read on. A run that
+    cannot install the handler is exactly as safe as it was before, so a
+    failure here must not stop it starting.
+    """
+    def handler(signum, frame):
+        raise Terminated(f"signal {signum}")
+
+    try:
+        signal.signal(signal.SIGTERM, handler)
+    except (AttributeError, ValueError, OSError):
+        pass
 
 
 class App:
@@ -1043,15 +1085,24 @@ def main(argv=None):
         if args.adopt_identity:
             print("--adopt-identity is never done unattended.")
             return 2
+    # SIGTERM is how this run is normally asked to stop - the panel's Stop
+    # button, and the panel's own cleanup when the browser tab streaming a run
+    # is closed. Handled, so the `finally` in locks.hold below actually runs
+    # and this provider's session slot is given back.
+    _stop_on_sigterm()
     app = App(args)
     # The slot this takes is per PROVIDER, not per account: Simyo signs the
     # older session out, server-side, the moment a second one appears, so two
-    # accounts of this provider can never be pulled at the same moment. The
-    # default directory is one level above this account's own output_dir -
-    # the one place every account of one provider is guaranteed to share,
-    # since each account's output_dir differs but sits beside the others'.
-    lock_dir = Path(app.config.get("lock_dir") or
-                    (Path(app.config["output_dir"]).parent / ".locks"))
+    # accounts of this provider can never be pulled at the same moment.
+    #
+    # Which is why the directory is derived from the app, not from this
+    # account's config: appload.lock_dir answers it for the panel and the
+    # scheduler too (see its docstring), and a lock the three of them compute
+    # differently is a lock that guards nothing. It used to be read off
+    # output_dir's parent, which is a per-account, user-chosen path - so the
+    # panel and the CLI landed on different directories natively, and any
+    # second account pointed somewhere nested broke it in Docker as well.
+    lock_dir = appload.lock_dir(SPEC.project_dir)
     # --verify only re-reads PDFs already saved on disk, and --open-browser is
     # a human sitting down to sign in - neither one touches the shared,
     # single-session browser tab this lock protects, so neither should have
@@ -1075,6 +1126,13 @@ def main(argv=None):
     except Parked as e:
         print(f"\nParked: {e}. This account needs a sign-in; nothing was run.")
         return 0
+    except Terminated:
+        # Before KeyboardInterrupt, which this subclasses. 143 is the
+        # conventional 128 + SIGTERM, and it has to be non-zero: the panel
+        # tells "you stopped this" from "it finished by itself" by the exit
+        # code, and reporting a stopped run as finished would be a lie.
+        print("\nStopped on request. Progress saved; the session slot is free.")
+        return 143
     except KeyboardInterrupt:
         print("\nStopped by user. Progress saved.")
     finally:

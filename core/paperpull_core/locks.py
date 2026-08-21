@@ -210,13 +210,43 @@ def acquire(lock_dir, slug: str, capacity: int, holder: str,
 
 
 def holders(lock_dir, slug: str, capacity: int) -> List[dict]:
-    """Who currently holds this provider's slots."""
+    """Every record sitting in this provider's slots, stale or not."""
     out = []
     for index in range(max(1, int(capacity))):
         path = _lock_path(Path(lock_dir), slug, index)
         if path.exists():
             out.append(_read(path))
     return out
+
+
+def live_holders(lock_dir, slug: str, capacity: int,
+                 now: Optional[datetime] = None) -> List[dict]:
+    """The holders that still count - the same rule acquire() applies.
+
+    A lock file is not evidence on its own. Nothing here releases a slot on
+    SIGKILL, on a container being recreated, or on a process that dies between
+    _claim() and its own finally, so a file older than STALE_AFTER means
+    "something died holding this", and `acquire()` takes it over for exactly
+    that reason (see `_steal`).
+
+    Anything that only *asks* whether a provider is busy has to apply the same
+    rule, or the two halves disagree in the one direction that matters: the
+    asker refuses a run that acquire() would happily have granted, and keeps
+    refusing it forever, because nothing ever removes the file it is reading.
+    That is precisely what gui/app.py's `_busy_holder` did with `holders()`,
+    which is why this exists rather than a second copy of the age test living
+    over there.
+
+    An unreadable record counts as stale, exactly as `_is_stale` already
+    decides for `acquire()`: the one moment a live lock is unreadable is the
+    instant between O_EXCL creating the file and _claim() fsyncing its bytes,
+    and a caller that starts a run in that window is then refused by
+    `acquire()` itself with ProviderBusy. Erring the other way - treating an
+    unreadable file as live - is the wedged-forever failure above.
+    """
+    now = now or datetime.now()
+    return [record for record in holders(lock_dir, slug, capacity)
+            if not _is_stale(record, now)]
 
 
 def release(claim: Claim) -> bool:

@@ -23,6 +23,7 @@ import subprocess
 import sys
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict
 from urllib.parse import urlsplit
 
@@ -94,6 +95,31 @@ def _same_origin_only(request: Request) -> None:
             raise HTTPException(403, "cross-origin request refused")
 
 
+CORE_DIR = HERE.parent / "core"
+
+
+def _core():
+    """paperpull_core's modules, or None if they cannot be loaded.
+
+    Guarded, because gui/requirements.txt is the only thing a native install
+    promises to have installed and paperpull_core lives in a sibling directory
+    the panel does not otherwise import from. Every caller below decides for
+    itself what None means - _python_for degrades, api_due refuses - because
+    those are genuinely different answers.
+
+    One place, so `sys.path` is touched once. Two call sites used to insert
+    CORE_DIR on every request, and `sys.path` on a panel left open for a week
+    grew a copy of that string per click, forever.
+    """
+    if str(CORE_DIR) not in sys.path:
+        sys.path.insert(0, str(CORE_DIR))
+    try:
+        from paperpull_core import appload, due as due_mod, locks
+    except Exception:
+        return None
+    return SimpleNamespace(appload=appload, due=due_mod, locks=locks)
+
+
 def _entry_script(app_dir: Path):
     for p in sorted(app_dir.glob("*.py")):
         if ENTRY_RE.match(p.name):
@@ -102,15 +128,18 @@ def _entry_script(app_dir: Path):
 
 
 def _venv_python(app_dir: Path):
-    r"""The app's own interpreter, on either venv layout.
+    r"""The app's own interpreter, if it has one - appload.venv_python's answer.
 
-    Windows puts it in .venv\Scripts\python.exe; macOS and Linux use
-    .venv/bin/python."""
-    for rel in ("Scripts/python.exe", "bin/python", "bin/python3"):
-        candidate = app_dir / ".venv" / rel
-        if candidate.exists():
-            return candidate
-    return None
+    The rule (Windows puts it in .venv\Scripts\python.exe; macOS and Linux use
+    .venv/bin/python) lives in appload because the scheduler needs the same
+    answer and, having its own copy, did not have it: it launched every app on
+    `sys.executable`, where playwright and paperpull_core are not installed.
+
+    None when the core cannot be loaded, which reads as "no venv" - the
+    container's own situation, where one interpreter serves everything.
+    """
+    core = _core()
+    return core.appload.venv_python(app_dir) if core else None
 
 
 def _python_for(app_dir: Path) -> str:
@@ -180,9 +209,14 @@ def _account_names(app_dir: Path):
 def _sentinel_for(app_dir: Path, account: str) -> dict:
     """This account's sentinel record, or {} if there is none yet.
 
-    Read as plain JSON on purpose: the panel drives the apps as subprocesses
-    and must not import their code or the core, so that it still runs from
-    gui/requirements.txt alone on a native install.
+    Read as plain JSON on purpose: this is the app list, the one thing the
+    panel must always be able to draw, and it must not depend on importing an
+    app's code or the core - a native install promises gui/requirements.txt
+    and nothing else. paperpull_core.appload resolves the same relative
+    output_dir the same way for the scheduler's due list; this stays a
+    separate read rather than a call into it because everything in this
+    function has to work with no core at all. If the resolution rule ever
+    changes, both sides change.
     """
     name = "config.json" if account == "primary" else f"config.{account}.json"
     cfg_path = _config_dir(app_dir) / name
@@ -285,48 +319,34 @@ def _build_cmd(app_meta: dict, account: str, action: str):
 def _busy_holder(app_dir: Path, account: str):
     """Who holds this provider's session slot right now, if anyone.
 
-    Guarded: gui/requirements.txt is the only thing a native install
-    promises to have installed, and paperpull_core lives in a sibling
-    directory the panel does not otherwise import from. If it can't be
-    loaded - not installed, mid-upgrade, whatever - this degrades to
+    Guarded (see _core): if the core can't be loaded this degrades to
     "cannot tell" (None) rather than breaking the Run button for every app
     over one provider's lock code.
+
+    Two things here are deliberately not computed locally. The directory comes
+    from appload.lock_dir, which is the same call simyo_docs.py's main() makes,
+    so the panel and the CLI cannot land on different, invisible-to-each-other
+    lock directories and fail to contend for the same slot - the one failure
+    mode that would make this whole feature silently do nothing. And the
+    staleness rule comes from locks.live_holders, the same rule locks.acquire
+    applies: a lock older than STALE_AFTER belongs to something that died.
+
+    That second one is why this reads live_holders and not holders. Nothing
+    releases a slot on SIGKILL or on a container being recreated, and the CLI
+    recovers from that by taking the stale lock over - so a panel that counted
+    every file it found refused this provider's Run button from the first
+    unclean exit until the end of time, while a terminal three feet away could
+    run the same account fine. `account` is unused for the same reason the
+    lock is: the slot is per provider, and the parameter stays because every
+    other check in api_run is per account.
     """
-    try:
-        sys.path.insert(0, str(HERE.parent / "core"))
-        from paperpull_core import appload, locks
-    except Exception:
+    core = _core()
+    if core is None:
         return None
     try:
-        spec = appload.load_spec(app_dir)
-        name = "config.json" if account == "primary" else f"config.{account}.json"
-        cfg_path = _config_dir(app_dir) / name
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
-        out_dir = Path(cfg["output_dir"])
-        if not out_dir.is_absolute():
-            # Mirrors _sentinel_for above: config.example.json ships
-            # "output_dir": "." which only means something once resolved
-            # against the app's own directory - the downloader subprocess's
-            # cwd (see the Popen call in api_run) - and not against this
-            # long-running panel process's own cwd, which is wherever
-            # uvicorn happened to start.
-            out_dir = app_dir / out_dir
-        # This MUST land on the same directory simyo_docs.py's main() computes
-        # for the same config, or the panel and the CLI would each be
-        # guarding a different, invisible-to-the-other .locks directory and
-        # never actually contend for the same slot - the one failure mode
-        # that would make this whole feature silently do nothing. An explicit
-        # "lock_dir" in the config wins on both sides; otherwise both land on
-        # one level above output_dir, resolved the same way relative paths
-        # are resolved above.
-        raw_lock_dir = cfg.get("lock_dir")
-        if raw_lock_dir:
-            lock_dir = Path(raw_lock_dir)
-            if not lock_dir.is_absolute():
-                lock_dir = app_dir / lock_dir
-        else:
-            lock_dir = out_dir.parent / ".locks"
-        held = locks.holders(lock_dir, spec.slug, spec.concurrency)
+        spec = core.appload.load_spec(app_dir)
+        held = core.locks.live_holders(core.appload.lock_dir(app_dir),
+                                       spec.slug, spec.concurrency)
         if len(held) >= spec.concurrency and held:
             return held[0].get("holder") or "another run"
     except Exception:
@@ -366,7 +386,7 @@ def api_due():
     ten-minute session never queues behind nine that last for days.
     Read-only: it opens no browser and starts nothing.
 
-    The import is guarded for the same reason _busy_holder's is above:
+    The import is guarded for the same reason _busy_holder's is (see _core):
     gui/requirements.txt is all a native install promises to have, and
     paperpull_core lives in a sibling directory the panel does not otherwise
     depend on. Unlike _busy_holder, though, failure here is not something to
@@ -376,14 +396,12 @@ def api_due():
     the page's Start Sitting button treats the two answers differently: an
     empty list means stand down, a failed fetch means something is broken.
     """
-    try:
-        sys.path.insert(0, str(HERE.parent / "core"))
-        from paperpull_core import appload, due as due_mod
-    except Exception:
+    core = _core()
+    if core is None:
         raise HTTPException(503, "paperpull_core is not importable here")
-    accounts = appload.accounts(APPS_ROOT, _config_root())
+    accounts = core.appload.accounts(APPS_ROOT, _config_root())
     today = date.today().isoformat()
-    return {"today": today, "due": due_mod.plan(accounts, today)}
+    return {"today": today, "due": core.due.plan(accounts, today)}
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +484,15 @@ def _stop_run(run_id: str) -> None:
     indefinitely, and "close the tab" should not be the only way out of that.
     Stopping is safe - downloaded_ok is only written after a document is
     saved, so a re-run resumes and re-fetches nothing.
+
+    terminate() is SIGTERM, and the apps handle it (simyo_docs.py's
+    `_stop_on_sigterm`) so that their `finally` blocks run and this provider's
+    session slot is released on the way out. Before that, one press of this
+    button left the lock file behind and _busy_holder refused the next run for
+    six hours - which the page then reported as "connection lost", a wrong
+    story about a wrong problem. _busy_holder now ages a stale lock out too,
+    so the two fixes cover each other: this is the tidy exit, that is the
+    backstop for a process that never got to run any code at all.
     """
     _live_run(run_id).terminate()
 

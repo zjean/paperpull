@@ -50,6 +50,34 @@ def test_holders_say_who_is_in_there(tmp_path):
     assert [h["holder"] for h in who] == ["jane"]
 
 
+def test_live_holders_ignores_a_stale_lock(tmp_path):
+    """The same rule acquire() applies, for anything that only asks.
+
+    A lock nothing will ever release - a run killed outright, a recreated
+    container - is taken over by acquire() after STALE_AFTER. A caller that
+    only wants to know "is this provider busy?" has to age it out too, or it
+    refuses a run acquire() would have granted, and keeps refusing it
+    forever. The panel's Run button did exactly that.
+    """
+    locks.acquire(tmp_path, "simyo", 1, "dead")
+    later = datetime.now() + locks.STALE_AFTER + timedelta(minutes=1)
+
+    # holders() reports the file; live_holders() reports who still counts.
+    assert [h["holder"] for h in locks.holders(tmp_path, "simyo", 1)] == ["dead"]
+    assert locks.live_holders(tmp_path, "simyo", 1, now=later) == []
+    # And the two agree while the holder is genuinely live.
+    assert [h["holder"] for h in
+            locks.live_holders(tmp_path, "simyo", 1)] == ["dead"]
+
+
+def test_live_holders_treats_an_unreadable_lock_as_stale(tmp_path):
+    """The judgement _is_stale already makes for acquire(): a record that
+    cannot be read is not evidence that anything holds the slot."""
+    locks.acquire(tmp_path, "simyo", 1, "primary")
+    (tmp_path / "simyo.0.lock").write_text("half-written", encoding="utf-8")
+    assert locks.live_holders(tmp_path, "simyo", 1) == []
+
+
 def test_the_context_manager_releases_on_the_way_out(tmp_path):
     with locks.hold(tmp_path, "simyo", 1, "primary"):
         with pytest.raises(locks.ProviderBusy):
