@@ -46,6 +46,7 @@ from storage import (CsvFile, DOCUMENT_INDEX_COLUMNS, JsonStore, Paths,
                      now_iso, sanitize_component, unique_path)
 
 from storage import ensure_owner, PROJECT_DIR, set_filename_owner
+from storage import identity, sentinel
 log = logging.getLogger("simyo_docs")
 
 DONE_STATES = {State.COMPLETED.value, State.NO_RECEIPT_AVAILABLE.value}
@@ -157,6 +158,11 @@ class App:
         self.discovery = JsonStore(self.paths.discovery_json, self.paths.backups)
         self.progress.load()
         self.discovery.load()
+        # Which account this config belongs to, and whether its session was
+        # alive last time. No secret lives here - see paperpull_core.sentinel.
+        self.sentinel = JsonStore(self.paths.sentinel_json, self.paths.backups)
+        self.sentinel.load()
+        self._identity_verified = False
         self.index_csv = CsvFile(self.paths.document_index_csv,
                                  DOCUMENT_INDEX_COLUMNS, self.paths.backups)
         self.rules = doc_types.load_rules()
@@ -273,6 +279,70 @@ class App:
             print("Sign in in the SAME tab, and do not open a second one -")
             print("a second Mijn Simyo tab signs you out of both.")
             ask("Press Enter after you are signed in... ")
+
+    # -- account identity --------------------------------------------------
+
+    def _anchor_records(self, docs) -> List[dict]:
+        """The identity records a Simyo invoice list yields.
+
+        Only the invoice number and its date. Both are already written to
+        progress.json and the index CSV, so this records nothing new about the
+        account - no phone number, no customer number, no amount.
+        """
+        return [{"id": d.invoice_number, "date": d.date_text}
+                for d in docs if getattr(d, "invoice_number", "")]
+
+    def ensure_identity(self, page, docs=None) -> None:
+        """Refuse to file this tab's invoices unless it IS this account.
+
+        Every app here points at one shared Chrome in the Docker layout, and
+        `site.find_signed_in_page` picks a tab by host - so with a second Simyo
+        account signed in, this run could read the wrong tab and file its
+        invoices under this config's `owner`. Nothing downstream would notice,
+        because the owner comes from the config and never from the page.
+
+        Verified once per run: the invoice list is one API call, and the
+        download path would otherwise re-ask it for every document.
+        """
+        if self._identity_verified:
+            return
+        if docs is None:
+            docs = site.collect_documents(page)
+        observed = self._anchor_records(docs)
+        recorded = sentinel.read_anchors(self.sentinel)
+        verdict = identity.check(recorded, observed)
+        act = identity.action(verdict, getattr(self.args, "adopt_identity", False))
+
+        if act == identity.REFUSE:
+            if verdict == identity.MISMATCH:
+                raise SystemExit(
+                    "\n!! This tab is NOT the account this config belongs to.\n"
+                    f"   config : {getattr(self.args, 'config', None) or 'config.json'}\n"
+                    f"   owner  : {self.config.get('owner') or '(unset)'}\n"
+                    "   Refusing to file another account's invoices under that owner.\n"
+                    "   Sign THIS account in - in one tab, Simyo allows no more -\n"
+                    "   and run again.")
+            raise SystemExit(
+                f"\n!! Cannot tell which account this tab belongs to ({verdict}).\n"
+                "   Sign in yourself, check the browser really shows the account\n"
+                "   this config is for, then run once with --adopt-identity to\n"
+                "   record it. That is the one moment this is taken on trust, so\n"
+                "   it is never done for you and never done unattended.")
+
+        if act == identity.PROCEED:
+            # Re-anchor: Simyo drops invoices older than ~12 months, so the
+            # fingerprint has to roll forward with that window or it expires.
+            sentinel.write_anchors(self.sentinel, identity.pick_anchors(observed))
+            self._identity_verified = True
+            return
+
+        # ADOPT: no proof either way (nothing recorded yet, or every anchor
+        # has aged out of Simyo's window), and the human asked to record it.
+        sentinel.write_anchors(self.sentinel, identity.pick_anchors(observed))
+        self._identity_verified = True
+        print("Recorded this account's identity:")
+        for anchor in sentinel.read_anchors(self.sentinel):
+            print(f"  invoice {anchor['id']}  ({anchor['date']})")
 
     # -- commands ----------------------------------------------------------
 
@@ -411,6 +481,7 @@ class App:
         # clicked: the page is only checked for a live session first.
         self.check_session(page)
         docs = site.collect_documents(page)
+        self.ensure_identity(page, docs)
         for r in docs:
             n_new += self._record_rawdoc(r, r.pdf_url)
         self.discovery.save()
@@ -475,6 +546,7 @@ class App:
 
     def process(self, docs: List[Document], dry_run: bool = False):
         page = self.page()
+        self.ensure_identity(page)
         for i, doc in enumerate(docs, 1):
             print(f"\n[{i}/{len(docs)}] {doc.date or '(no date)'}  "
                   f"{doc.category}  {doc.summary}")
@@ -803,6 +875,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "'already downloaded' memory (rebuilds deleted files)")
     ap.add_argument("--config", help="use an alternate config file, e.g. "
                                      "config.spouse.json (separate account)")
+    ap.add_argument("--adopt-identity", action="store_true",
+                    help="record which account this config's tab belongs to. "
+                         "Do this once, on a tab you just signed in yourself.")
     ap.add_argument("--open-browser", action="store_true",
                     help="launch a sign-in browser using this config's profile/port")
     return ap
