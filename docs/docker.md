@@ -34,12 +34,23 @@ You need Docker with Compose, a reverse proxy, and a `proxy` network the proxy
 already uses.
 
 ```bash
-git clone git@github.com:zjean/paperpull.git && cd paperpull
+git clone https://github.com/zjean/paperpull.git && cd paperpull
+
+# On Linux, Docker creates a missing bind mount as root, and both containers
+# run as uid 1000 — so these have to exist and be ours before the first start.
+# 1000 is not arbitrary; it is the browser container's PUID, and a mismatch is
+# what turns downloads into zero-byte files (see #4 below).
+mkdir -p config data browser-profile
+sudo chown -R 1000:1000 config data browser-profile
+
 cp .env.example .env
 $EDITOR .env                    # BROWSER_PASSWORD and PAPERPULL_ALLOWED_HOSTS
 docker network create proxy     # if you don't have one already
 docker compose up -d
 ```
+
+Deploying to a real server, including publishing the images and pointing a
+proxy at them, is walked through in the [README](../README.md#deploy-it-to-a-server).
 
 Add the two blocks from [`docker/Caddyfile.example`](../docker/Caddyfile.example)
 to your Caddyfile. Then:

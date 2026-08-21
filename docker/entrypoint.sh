@@ -45,6 +45,26 @@ trap 'kill "$CDP_SOCAT" 2>/dev/null || true' EXIT INT TERM
 # tracked config.example.json with the three values that differ in a
 # container; everything after that is yours to edit and is never overwritten.
 # ---------------------------------------------------------------------------
+# On Linux, Docker creates a missing bind-mount directory as root, and we run
+# as uid 1000 — so a first `docker compose up` would die on the first mkdir
+# below with nothing but "Permission denied" to go on. Say what to do instead.
+# (macOS and Windows bind mounts are permissive, which is exactly why this is
+# easy to miss until the first real server deploy.)
+for d in "$CONFIG_ROOT" "$DATA_ROOT"; do
+    if [ ! -w "$d" ]; then
+        log "FATAL: $d is not writable by uid $(id -u)."
+        log ""
+        log "  Its bind mount was created by root. From the compose directory:"
+        log ""
+        log "    mkdir -p config data browser-profile"
+        log "    sudo chown -R 1000:1000 config data browser-profile"
+        log ""
+        log "  1000 is not arbitrary: it has to match the browser container's"
+        log "  PUID, or downloads arrive as zero-byte files. See docs/docker.md."
+        exit 1
+    fi
+done
+
 seeded=0
 linked=0
 for app_dir in "$APPS"/*; do

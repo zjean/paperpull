@@ -120,33 +120,160 @@ account with its own profile, port and output folders, so no data mixes. The
 launchers take the account label as an argument (`login.bat spouse` /
 `./login.command spouse`).
 
-## Run it in Docker
+## Deploy it to a server
 
 **This fork's supported path.** The control panel becomes a web UI you reach
-from any device, and the sign-in browser becomes a real Google Chrome with a
-web desktop in its own container. You still sign in yourself; PaperPull still
+from any device, and the sign-in browser becomes a real Google Chrome with a web
+desktop in its own container. You still sign in yourself; PaperPull still
 attaches afterwards over the DevTools protocol and never sees a password.
 
+Two containers, behind your own reverse proxy:
+
+| Service | Is | Proxy it as |
+|---|---|---|
+| `browser` | real Google Chrome + a web desktop. **You sign in here.** | `browser.<you>` → `browser:3000` |
+| `paperpull` | the control panel and all sixteen apps | `paperpull.<you>` → `paperpull:8765` |
+
+> ⚠️ **Read the Docker section of [SECURITY.md](SECURITY.md) first.** This puts a
+> browser that is *already signed in to your bank* on your network. Whoever
+> reaches it needs no password and faces no 2FA. That is a different threat
+> model from a localhost-only install, and it deserves a real password, real
+> auth in front of the panel, and no exposure to the open internet.
+
+### What you need
+
+- Docker with Compose v2, on **amd64 or arm64** (both are built).
+- A reverse proxy on a Docker network named `proxy`.
+- **~6 GB of disk** for the images — the browser one is 4.5 GB, because it
+  contains a real Chrome and a desktop.
+- Two DNS names pointing at the server.
+
+### 1. Publish the images (once)
+
+CI builds them, but nothing exists until a branch is pushed:
+
 ```bash
-cp .env.example .env         # set BROWSER_PASSWORD and PAPERPULL_ALLOWED_HOSTS
-docker network create proxy  # if your reverse proxy doesn't have one
+git push -u origin develop     # builds ghcr.io/zjean/paperpull:beta
+# happy with :beta? then
+git switch main && git merge develop && git push   # builds :latest
+```
+
+**Then make the two packages public**, or the server cannot pull them. GHCR
+publishes as *private* even from a public repo, and a `docker compose pull` that
+fails with `denied` or `unauthorized` is almost always this:
+
+> github.com/zjean?tab=packages → `paperpull` → Package settings → Change
+> visibility → Public. Repeat for `paperpull-browser`.
+
+Prefer to keep them private? Then on the server, once:
+
+```bash
+echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u zjean --password-stdin
+```
+with a classic PAT carrying only `read:packages`.
+
+### 2. Set it up on the server
+
+```bash
+git clone https://github.com/zjean/paperpull.git /opt/paperpull
+cd /opt/paperpull
+
+# Bind-mount directories must be writable by uid 1000 before the first start.
+# Docker would otherwise create them as root, and both containers run as 1000.
+mkdir -p config data browser-profile
+sudo chown -R 1000:1000 config data browser-profile
+
+cp .env.example .env
+$EDITOR .env
+```
+
+Fill in at least these:
+
+```ini
+BROWSER_PASSWORD=<a real password — it guards a signed-in bank session>
+PAPERPULL_ALLOWED_HOSTS=paperpull.example.com
+PAPERPULL_BROWSER_URL=https://browser.example.com/
+TZ=Europe/Amsterdam
+```
+
+`PAPERPULL_ALLOWED_HOSTS` is not optional: the panel refuses any request whose
+`Origin` it does not recognise, so without your hostname there every click
+returns 403. It is an exact-match allowlist, which is what stops another site
+you have open in the same browser from driving the panel.
+
+Then:
+
+```bash
+docker network create proxy      # skip if your proxy already has one
 docker compose up -d
 ```
 
-Then add the two blocks from [`docker/Caddyfile.example`](docker/Caddyfile.example)
-to your Caddyfile, sign in to a provider on the browser desktop, and drive it
-from the panel. Full setup, the four Chrome/Playwright gotchas the design works
-around, and how to verify it: **[docs/docker.md](docs/docker.md)**.
+### 3. Point your proxy at it
 
-> ⚠️ This exposes a browser that is signed in to your accounts. Read the
-> Docker section of [SECURITY.md](SECURITY.md) first — the threat model is not
-> the same as a localhost-only install.
+Copy the two blocks from [`docker/Caddyfile.example`](docker/Caddyfile.example),
+substituting your hostnames. Two settings there are load-bearing rather than
+taste:
 
-Images publish from CI: `:latest` from `main`, `:beta` from `develop`.
+- **`flush_interval -1`** on the panel. It streams a run's output as
+  server-sent events, and a buffering proxy turns that into a long silence
+  followed by everything at once.
+- **`basic_auth`** on the panel. It has no login of its own.
 
+Caddy proxies the desktop's websockets with no extra configuration. If you use
+nginx or Nginx Proxy Manager instead, enable websocket support explicitly.
+
+### 4. First run
+
+The browser needs a minute after a cold start — the desktop comes up, then
+Chrome. Until then the panel reports it cannot connect, which is impatience
+rather than an error.
+
+1. Open **`browser.<you>`** and log in with `BROWSER_USER` / `BROWSER_PASSWORD`.
+   You get a real Chrome. Sign in to a provider — 2FA, device approval, bank
+   app, DigiD, whatever it takes — and **leave the tab open**.
+2. Open **`paperpull.<you>`**, pick that app, press **Login**. It should report
+   that it connected and can see your documents.
+3. **Pilot** downloads the newest few. Then **Run All**.
+
+Sign in to as many providers as you like in that one Chrome; each app finds its
+own tab. Your PDFs land in `./data/<app>/`, next to that app's `progress.json`
+and index CSV.
+
+Confirm the plumbing whenever you change the stack:
+
+```bash
+docker compose exec paperpull python /app/tools/docker_smoke.py
 ```
-ghcr.io/zjean/paperpull:latest
+
+### Running it
+
+```bash
+docker compose logs -f paperpull            # what a run is doing
+docker compose pull && docker compose up -d # update
+docker compose restart browser              # that's all — nothing else needs it
 ```
+
+Rolling back is why every build also gets a `:sha-<short>` tag — put one in
+`PAPERPULL_IMAGE` and `up -d`.
+
+**Back up `./browser-profile` and `./data`.** The first holds live session
+cookies for every provider you have signed into, so losing it means signing in
+everywhere again — and it is as sensitive as a password. The second holds your
+statements. Neither is committable; `.gitignore` and `.dockerignore` block both.
+
+### When something is wrong
+
+| Symptom | Cause |
+|---|---|
+| `denied` / `unauthorized` on pull | GHCR packages are still private — step 1. |
+| Container exits: `/config is not writable` | The `chown -R 1000:1000` in step 2 was skipped. |
+| Every panel click returns 403 | Your hostname is missing from `PAPERPULL_ALLOWED_HOSTS`. |
+| Panel shows nothing during a run, then everything | The proxy is buffering; `flush_interval -1`. |
+| **Login** says it cannot connect | Give the browser a minute. If it persists, `docker compose logs browser`. |
+| Downloads are 0 bytes | The `pw-artifacts` volume or the uid match broke — gotcha #4 in [docs/docker.md](docs/docker.md). |
+
+Full reference, including the five silent Chrome and Playwright behaviours this
+design works around: **[docs/docker.md](docs/docker.md)**.
 
 This fork tracks [rheeloaded/paperpull](https://github.com/rheeloaded/paperpull)
 for new providers — see [docs/upstream.md](docs/upstream.md).
