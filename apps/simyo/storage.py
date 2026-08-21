@@ -57,6 +57,10 @@ SPEC = AppSpec(
     },
     base_url="https://mijn.simyo.nl/",
     rules_filename="document_rules.json",
+    # Mijn Simyo signs you out after roughly ten minutes idle, and a second
+    # tab signs out the first - so this account can never be pulled unattended
+    # on a timer. See simyo_site.py's notes 1 and 6.
+    session_lifetime_minutes=10,
 )
 
 _core.bind(SPEC)

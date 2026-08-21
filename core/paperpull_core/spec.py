@@ -80,6 +80,16 @@ class AppSpec:
     # Rules file for item/document classification, relative to project_dir.
     rules_filename: Optional[str] = None
 
+    # How long this provider's signed-in session survives while idle.
+    #
+    # None means "days" - the ordinary case, and the one that can run on a
+    # plain schedule with nobody present. A number means the session dies that
+    # fast (Simyo: about ten minutes, and a second tab signs the first out),
+    # so a run has to happen while a human is still sitting there. This single
+    # fact is what routes a provider to unattended cron or to a human sitting;
+    # nothing else about the two paths differs.
+    session_lifetime_minutes: Optional[int] = None
+
     def __post_init__(self):
         self.project_dir = Path(self.project_dir)
         if self.kind not in (RECEIPT, DOCUMENT):
@@ -95,6 +105,10 @@ class AppSpec:
         if self.default_route and self.default_route not in known:
             raise ValueError(
                 f"AppSpec.default_route {self.default_route!r} is not a declared folder")
+        if self.session_lifetime_minutes is not None and \
+                int(self.session_lifetime_minutes) < 1:
+            raise ValueError(
+                "AppSpec.session_lifetime_minutes must be None or at least 1")
 
     @property
     def slug(self) -> str:

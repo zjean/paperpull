@@ -172,3 +172,24 @@ def test_config_saved_with_a_bom_still_loads(tmp_path):
 def test_paths_include_the_sentinel_file(tmp_path):
     paths = storage.Paths(tmp_path / "out")
     assert paths.sentinel_json == tmp_path / "out" / "sentinel.json"
+
+
+def test_session_lifetime_defaults_to_long(tmp_path):
+    """None means 'holds for days': the majority case, safe on plain cron."""
+    assert document_spec(tmp_path).session_lifetime_minutes is None
+
+
+def test_session_lifetime_can_be_declared(tmp_path):
+    spec = AppSpec(provider="Simyo", project_dir=tmp_path, kind=DOCUMENT,
+                   folders=[Folder("statements", "Statements")],
+                   routes={"Statement": "statements"},
+                   session_lifetime_minutes=10)
+    assert spec.session_lifetime_minutes == 10
+
+
+def test_a_nonsense_session_lifetime_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="session_lifetime_minutes"):
+        AppSpec(provider="Simyo", project_dir=tmp_path, kind=DOCUMENT,
+                folders=[Folder("statements", "Statements")],
+                routes={"Statement": "statements"},
+                session_lifetime_minutes=0)
