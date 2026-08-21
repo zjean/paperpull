@@ -28,6 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The default docker driver cannot export a build cache, and
+      # build-push-action treats that as a hard error.
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build the panel image
         uses: docker/build-push-action@v6
         with:
