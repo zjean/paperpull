@@ -173,3 +173,175 @@ def test_a_bad_hour_exits_two_rather_than_tracebacking(monkeypatch, capsys):
     monkeypatch.setenv("PAPERPULL_SCHEDULE_HOUR", "25")
     assert schedule.main(["--once"]) == 2
     assert "PAPERPULL_SCHEDULE_HOUR" in capsys.readouterr().err
+
+
+# -- what a run meant, and what gets said about it -------------------------
+
+def test_a_parked_run_is_something_a_person_must_act_on():
+    schedule = _schedule()
+    session = {"state": "parked", "parked_reason": "no signed-in tab"}
+    assert schedule.outcome(0, session) == (
+        schedule.PARKED, "no signed-in tab")
+
+
+def test_a_clean_run_says_nothing():
+    """The exit code is 0 for both, which is why the session is consulted."""
+    schedule = _schedule()
+    assert schedule.outcome(0, {"state": "warm"}) is None
+
+
+def test_a_parked_run_with_no_reason_still_asks_for_a_person():
+    schedule = _schedule()
+    kind, why = schedule.outcome(0, {"state": "parked"})
+    assert kind == schedule.PARKED
+    assert why
+
+
+def test_being_terminated_is_not_an_error():
+    """143 is the container being stopped, or someone pressing Stop."""
+    schedule = _schedule()
+    assert schedule.outcome(schedule.TERMINATED_EXIT, {}) is None
+
+
+def test_a_busy_provider_is_reported():
+    """Transient, but if it stops being transient a wedged lock means this
+    account silently never runs again - which is what this exists to end."""
+    schedule = _schedule()
+    kind, why = schedule.outcome(4, {})
+    assert kind == schedule.ERROR
+    assert "4" in why
+
+
+def test_any_other_non_zero_exit_is_an_error():
+    schedule = _schedule()
+    assert schedule.outcome(1, {})[0] == schedule.ERROR
+
+
+def test_a_quiet_pass_has_nothing_to_send():
+    schedule = _schedule()
+    assert schedule.digest([], []) is None
+
+
+def test_the_digest_names_each_account_and_why():
+    schedule = _schedule()
+    title, body, tags, priority = schedule.digest(
+        [("youfone/primary", "no signed-in tab")],
+        [("ally/primary", "exited 1")])
+    assert "youfone/primary" in body and "no signed-in tab" in body
+    assert "ally/primary" in body and "exited 1" in body
+    assert "1" in title
+    assert tags and priority
+
+
+def test_the_digest_says_how_many_need_a_person():
+    schedule = _schedule()
+    title, _, _, _ = schedule.digest(
+        [("a/one", "why"), ("b/two", "why")], [])
+    assert "2" in title
+
+
+def test_one_pass_files_each_account_where_it_belongs(monkeypatch):
+    """outcome() and digest() are each tested in isolation, and every other
+    test here replaces one_pass wholesale - so nothing exercises the wiring
+    inside one_pass itself: which list an account's (who, why) actually lands
+    in. Swap the two `.append` targets in one_pass and every other test in
+    this file still passes while a park is reported as an error and vice
+    versa; this is the one test that would catch that."""
+    schedule = _schedule()
+
+    clean = {"app": "ally", "account": "primary", "output_dir": "/data/ally",
+             "session_lifetime_minutes": None}
+    goes_parked = {"app": "youfone", "account": "primary",
+                   "output_dir": "/data/youfone",
+                   "session_lifetime_minutes": None}
+    goes_error = {"app": "simyo", "account": "primary",
+                  "output_dir": "/data/simyo",
+                  "session_lifetime_minutes": None}
+    perishable = {"app": "kpn", "account": "primary",
+                  "output_dir": "/data/kpn", "session_lifetime_minutes": 10}
+    accounts = [clean, goes_parked, goes_error, perishable]
+
+    monkeypatch.setattr(schedule.appload, "accounts",
+                         lambda apps_root, config_root: accounts)
+    monkeypatch.setattr(schedule.due, "plan", lambda accounts, today: accounts)
+
+    codes = {"ally": 0, "youfone": 0, "simyo": 1}
+    monkeypatch.setattr(schedule, "run_one",
+                         lambda account, apps_root: codes[account["app"]])
+
+    sessions = {
+        "/data/ally": {"state": "warm"},
+        "/data/youfone": {"state": "parked",
+                           "parked_reason": "no signed-in tab"},
+        "/data/simyo": {},
+    }
+    monkeypatch.setattr(schedule.appload, "session_record",
+                         lambda output_dir: sessions[output_dir])
+
+    parked, errors = schedule.one_pass(Path("/nowhere"), None, "2026-08-22")
+
+    assert ("youfone/primary", "no signed-in tab") in parked
+    assert ("simyo/primary", "exited 1") in errors
+    assert ("kpn/primary", "needs a person to sign in") in parked
+    assert not any(who.startswith("ally/") for who, _ in parked)
+    assert not any(who.startswith("ally/") for who, _ in errors)
+    assert len(parked) == 2 and len(errors) == 1
+
+
+def test_a_pass_that_blows_up_still_tells_someone(monkeypatch):
+    """Otherwise the one failure that hides every other failure is this
+    module's own. The message names the exception's type only, never its
+    own text: SECURITY.md's Notifications section promises a message never
+    carries anything read off a page, and a raw str(exception) is free text
+    that can carry an absolute path (a FileNotFoundError, a KeyError) which
+    on a native install names the operator."""
+    schedule = _schedule()
+    sent = []
+    monkeypatch.setattr(schedule.notify, "send",
+                        lambda *a, **k: sent.append((a, k)) or True)
+    monkeypatch.setattr(
+        schedule, "one_pass",
+        lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("boom: /Users/jane/secret")))
+    code = schedule.pass_and_notify(Path("/nowhere"), None, "2026-08-22")
+    assert code != 0
+    assert sent, "a pass that raised sent nothing"
+    message = sent[0][0][1]
+    assert "boom" not in message and "/Users/jane" not in message
+    assert "RuntimeError" in message
+
+
+def test_a_quiet_pass_sends_nothing(monkeypatch):
+    schedule = _schedule()
+    sent = []
+    monkeypatch.setattr(schedule.notify, "send",
+                        lambda *a, **k: sent.append((a, k)) or True)
+    monkeypatch.setattr(schedule, "one_pass", lambda *a, **k: ([], []))
+    assert schedule.pass_and_notify(Path("/nowhere"), None, "2026-08-22") == 0
+    assert sent == []
+
+
+# -- whether anyone would even be told -------------------------------------
+
+def test_once_says_notifications_are_on_when_configured(monkeypatch, capsys):
+    """`configured()` existed and nothing shipping ever called it, so a
+    typo'd PAPERPULL_NTFY_URL produced a scheduler that ran forever and said
+    nothing - indistinguishable from "nothing needed you". --once is what
+    docs/docker.md tells a person to run to check their compose file, so it
+    has to say this too, not just the loop."""
+    schedule = _schedule()
+    monkeypatch.setenv("PAPERPULL_NTFY_URL",
+                       "https://ntfy.example.com/paperpull")
+    monkeypatch.setattr(schedule, "pass_and_notify", lambda *a, **k: 0)
+    assert schedule.main(["--once"]) == 0
+    assert "Notifications: on." in capsys.readouterr().out
+
+
+def test_once_says_notifications_are_off_when_unset(monkeypatch, capsys):
+    schedule = _schedule()
+    monkeypatch.delenv("PAPERPULL_NTFY_URL", raising=False)
+    monkeypatch.setattr(schedule, "pass_and_notify", lambda *a, **k: 0)
+    assert schedule.main(["--once"]) == 0
+    out = capsys.readouterr().out
+    assert "Notifications: off" in out
+    assert "PAPERPULL_NTFY_URL" in out

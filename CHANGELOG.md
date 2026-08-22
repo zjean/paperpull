@@ -7,6 +7,44 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR** — a new app, or a cross-app feature
 - **MAJOR** — breaking changes (repo layout, config format, removing an app)
 
+## [0.11.0] — 2026-08-22
+
+### Added
+- **An ntfy notification from the scheduler, when an unattended pass finds
+  something a person has to act on.** Until now nothing in PaperPull ever sent
+  anything anywhere; this is the first outbound call in the project, made only
+  by the `scheduler` container. It fires when a pass parks an account (dead
+  session, no signed-in tab, a security challenge, an unprovable identity), a
+  perishable account (Simyo) is due — it is never started unattended, so it
+  produces no exit code and no sentinel state, but it is exactly the case this
+  feature exists for — or an account exits non-zero, including exit 4 (a busy
+  provider) and the pass itself raising. One digest per pass, only when there
+  is something to say: a clean run, a quiet run, exit 143 (stopped), an app
+  skipped for lacking `--unattended`, and anything a person started themselves
+  from the panel or a terminal all stay silent, deliberately — a push about
+  something already on your screen is noise, not signal.
+
+  A message names the provider, the account label, and the reason —
+  `youfone/primary - no signed-in tab` — and nothing else: never a document,
+  an amount, a customer number, or anything read off a page. On ntfy.sh a
+  topic has no authentication and **the topic name is the credential** —
+  anyone who learns it can read every message ever sent to it, which is enough
+  to know which providers you use. `PAPERPULL_NTFY_TOKEN` exists for a topic
+  that requires a bearer token, but nothing requires you to set it, and an
+  unguessable topic name (or a server of your own) is the actual protection.
+  `PAPERPULL_NTFY_URL` is added to the `scheduler` service and to
+  `.env.example`; empty is the default, and empty means nothing is ever sent.
+
+  `core/paperpull_core/notify.py` is the new module: it never raises, never
+  blocks long, and does nothing when unconfigured. Standard library only
+  (`urllib.request`) — no new dependency.
+
+### Changed
+- `tools/schedule.py --once` now exits non-zero when the pass it ran raised,
+  rather than always returning 0. Consistent with the rest of the project's
+  "non-zero means broken" rule, but a cron wrapper written against the old
+  behavior would need to account for it.
+
 ## [0.10.0] — 2026-08-21
 
 ### Added

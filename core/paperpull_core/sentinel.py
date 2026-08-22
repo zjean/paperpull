@@ -25,12 +25,13 @@ from typing import Iterable, List
 IDENTITY_KEY = "identity"
 SESSION_KEY = "session"
 
-# The two fields inside the session record that anything outside this module
+# The three fields inside the session record that anything outside this module
 # reads. Named because paperpull_core.appload reads the same file as plain
 # JSON - it answers "who is due?" for the scheduler and the panel without a
 # JsonStore - and a string literal over there could not follow a rename here.
 STATE_KEY = "state"
 LAST_ALIVE_KEY = "last_verified_alive"
+PARKED_REASON_KEY = "parked_reason"
 
 WARM = "warm"
 PARKED = "parked"
@@ -47,17 +48,28 @@ def write_anchors(store, anchors: Iterable[dict]) -> None:
 def mark_warm(store, when: str) -> None:
     """The session was alive at `when`, and is no longer parked."""
     store.update(SESSION_KEY, {STATE_KEY: WARM, LAST_ALIVE_KEY: when,
-                               "parked_reason": ""})
+                               PARKED_REASON_KEY: ""})
 
 
 def park(store, reason: str, when: str) -> None:
     """This account needs a human. Not an error - a state."""
-    store.update(SESSION_KEY, {STATE_KEY: PARKED, "parked_reason": reason,
+    store.update(SESSION_KEY, {STATE_KEY: PARKED, PARKED_REASON_KEY: reason,
                                "parked_at": when})
 
 
 def session_state(store) -> str:
     return (store.get(SESSION_KEY) or {}).get(STATE_KEY) or ""
+
+
+def parked_reason(store) -> str:
+    """Why this account is parked, in the app's own words.
+
+    Written by park() since parking existed and read by nothing until the
+    scheduler needed to tell a person WHY they are needed rather than only
+    that they are. Empty for a warm session, because mark_warm clears it -
+    so this doubles as "is there anything to say about this account?".
+    """
+    return (store.get(SESSION_KEY) or {}).get(PARKED_REASON_KEY) or ""
 
 
 def last_verified_alive(store) -> str:

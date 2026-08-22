@@ -91,3 +91,85 @@ def test_two_providers_sharing_one_lock_dir_do_not_share_a_slot(tmp_path,
     locks.acquire(directory, "simyo", 1, "primary")
     # Would raise ProviderBusy if the slug were not part of the path.
     assert locks.acquire(directory, "youfone", 1, "primary").path.exists()
+
+
+# -- session record ---------------------------------------------------------
+
+
+def test_the_session_record_is_the_sentinels_session_block(tmp_path):
+    (tmp_path / "sentinel.json").write_text(
+        '{"session": {"state": "parked", "parked_reason": "no signed-in tab"}}',
+        encoding="utf-8")
+    assert appload.session_record(tmp_path) == {
+        "state": "parked", "parked_reason": "no signed-in tab"}
+
+
+def test_a_missing_or_broken_sentinel_is_an_empty_record(tmp_path):
+    """Never an exception: one unreadable account must not end the pass."""
+    assert appload.session_record(tmp_path) == {}
+    (tmp_path / "sentinel.json").write_text("[1, 2, 3]", encoding="utf-8")
+    assert appload.session_record(tmp_path) == {}
+    (tmp_path / "sentinel.json").write_text("{not json", encoding="utf-8")
+    assert appload.session_record(tmp_path) == {}
+
+
+def test_a_non_dict_session_block_is_an_empty_record(tmp_path):
+    (tmp_path / "sentinel.json").write_text('{"session": "nope"}',
+                                            encoding="utf-8")
+    assert appload.session_record(tmp_path) == {}
+
+
+def test_invalid_utf8_bytes_in_sentinel_is_an_empty_record(tmp_path):
+    """A file with invalid UTF-8 bytes raises UnicodeDecodeError, not OSError
+    or json.JSONDecodeError. The handler must catch ValueError to survive it."""
+    (tmp_path / "sentinel.json").write_bytes(b"\xff\xfe not utf-8")
+    assert appload.session_record(tmp_path) == {}
+
+
+def test_accounts_carry_the_parked_reason(tmp_path):
+    app_dir = tmp_path / "apps" / "testco"
+    app_dir.mkdir(parents=True)
+    (app_dir / "testco_docs.py").write_text("", encoding="utf-8")
+    out = tmp_path / "data" / "testco"
+    out.mkdir(parents=True)
+    (app_dir / "config.json").write_text(
+        '{"output_dir": "%s"}' % out.as_posix(), encoding="utf-8")
+    (out / "sentinel.json").write_text(
+        '{"session": {"state": "parked", "parked_reason": "identity unproven"}}',
+        encoding="utf-8")
+
+    record = appload.accounts(tmp_path / "apps", None)[0]
+    assert record["parked"] is True
+    assert record["parked_reason"] == "identity unproven"
+
+
+def test_one_bad_sentinel_does_not_break_the_listing(tmp_path):
+    """A broken sentinel.json - missing, unreadable, or containing invalid
+    UTF-8 - must not end the pass. Healthy accounts still appear in the list."""
+    # First app with a broken sentinel (invalid UTF-8).
+    bad_app = tmp_path / "apps" / "badco"
+    bad_app.mkdir(parents=True)
+    (bad_app / "badco_docs.py").write_text("", encoding="utf-8")
+    bad_out = tmp_path / "data" / "badco"
+    bad_out.mkdir(parents=True)
+    (bad_app / "config.json").write_text(
+        '{"output_dir": "%s"}' % bad_out.as_posix(), encoding="utf-8")
+    (bad_out / "sentinel.json").write_bytes(b"\xff\xfe not utf-8")
+
+    # Second app with a healthy sentinel.
+    good_app = tmp_path / "apps" / "goodco"
+    good_app.mkdir(parents=True)
+    (good_app / "goodco_docs.py").write_text("", encoding="utf-8")
+    good_out = tmp_path / "data" / "goodco"
+    good_out.mkdir(parents=True)
+    (good_app / "config.json").write_text(
+        '{"output_dir": "%s"}' % good_out.as_posix(), encoding="utf-8")
+    (good_out / "sentinel.json").write_text(
+        '{"session": {"state": "warm"}}', encoding="utf-8")
+
+    records = appload.accounts(tmp_path / "apps", None)
+    assert len(records) == 2
+    # Find the good one - it must be present despite the broken one.
+    good_record = [r for r in records if r["app"] == "goodco"][0]
+    assert good_record["parked"] is False
+    assert good_record["parked_reason"] == ""

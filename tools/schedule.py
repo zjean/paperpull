@@ -5,11 +5,15 @@ image as the panel and invokes the same app CLIs the panel does.
 
 The split is one declared fact. A provider whose AppSpec leaves
 `session_lifetime_minutes` as None holds its session for days, so a scheduled
-run will usually find it alive - and if it does not, the run parks and exits 0
-and nothing is woken up. A provider that declares a lifetime (Simyo: ten
-minutes) can only be pulled while a human is sitting there, so it is never
-started here; it is printed, for the panel's sitting and for whatever notifier
-you point at this log.
+run will usually find it alive - and if it does not, the run still exits 0
+rather than failing, so that a non-zero exit keeps meaning "something is
+broken"; `outcome` has to consult the account's session afterward for exactly
+that reason, and `pass_and_notify` tells a person once a pass has parked an
+account or errored, rather than leaving that for whoever next reads this log.
+A provider that declares a lifetime (Simyo: ten minutes) can only be pulled
+while a human is sitting there, so it is never started here; it is printed
+for the panel's sitting, and named in that same notification as an account
+that needs a person too.
 
 The command is `--unattended --all --yes`, and `--all` is not an overreach.
 It is the only action that asks the provider what exists - an app's `--all`
@@ -49,9 +53,17 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "core"))
 
-from paperpull_core import appload, due  # noqa: E402
+from paperpull_core import appload, due, notify, sentinel  # noqa: E402
 
 POLL_SECONDS = 600
+
+# What an account's run meant to a person.
+PARKED = "parked"
+ERROR = "error"
+
+# 128 + SIGTERM: the container was stopped, or someone pressed Stop in the
+# panel. Not a failure, and not worth waking anyone for.
+TERMINATED_EXIT = 143
 
 # What a scheduled run of one account actually is. See the module docstring
 # for why --all and not --resume; --yes answers the confirmation prompt that
@@ -114,7 +126,56 @@ def run_one(account: dict, apps_root: Path) -> int:
     return proc.returncode
 
 
-def one_pass(apps_root: Path, config_root, today: str) -> None:
+def outcome(code: int, session: dict) -> tuple[str, str] | None:
+    """What this run means to a person: a park, an error, or nothing.
+
+    The session is consulted because the exit code cannot answer this on its
+    own - a parked run exits 0 exactly like a clean one, deliberately, so
+    that a non-zero exit keeps meaning "something is broken".
+    """
+    if code == 0:
+        if session.get(sentinel.STATE_KEY) != sentinel.PARKED:
+            return None
+        why = session.get(sentinel.PARKED_REASON_KEY) or "needs a person"
+        return (PARKED, why)
+    if code == TERMINATED_EXIT:
+        return None
+    return (ERROR, f"exited {code}")
+
+
+def digest(parked: list, errors: list) -> tuple[str, str, tuple, int] | None:
+    """One message for the whole pass, or None if there is nothing to say.
+
+    One message rather than one per account: a four-account bad night should
+    buzz once. The cost is that a single item cannot be dismissed on its own.
+    """
+    if not parked and not errors:
+        return None
+    counts = []
+    if parked:
+        verb = "needs" if len(parked) == 1 else "need"
+        counts.append(f"{len(parked)} {verb} you")
+    if errors:
+        counts.append(f"{len(errors)} error" + ("s" if len(errors) > 1 else ""))
+    title = "PaperPull: " + ", ".join(counts)
+
+    lines = []
+    if parked:
+        lines.append("Needs you:")
+        lines += [f"  {who} - {why}" for who, why in parked]
+    if errors:
+        if lines:
+            lines.append("")
+        lines.append("Errors:")
+        lines += [f"  {who} - {why}" for who, why in errors]
+
+    tags = ("rotating_light",) if errors else ("warning",)
+    priority = 4 if errors else 3
+    return (title, "\n".join(lines), tags, priority)
+
+
+def one_pass(apps_root: Path, config_root, today: str) -> tuple[list, list]:
+    """Run everything due that can run itself. Returns (parked, errors)."""
     accounts = appload.accounts(apps_root, config_root)
     plan = due.plan(accounts, today)
     patient = [a for a in plan if a["session_lifetime_minutes"] is None]
@@ -123,17 +184,62 @@ def one_pass(apps_root: Path, config_root, today: str) -> None:
     print(f"[{datetime.now():%Y-%m-%d %H:%M}] "
           f"{len(plan)} due: {len(patient)} unattended, "
           f"{len(perishable)} need a person")
+
+    parked, errors = [], []
     for account in patient:
         print(f"  {account['app']}/{account['account']}")
         code = run_one(account, apps_root)
         if code:
             print(f"  ! exited {code}")
+        # Re-read after the run: the app writes the reason as it parks, and
+        # this is where it is read back. See appload.session_record.
+        result = outcome(code, appload.session_record(account["output_dir"]))
+        if result is None:
+            continue
+        kind, why = result
+        who = f"{account['app']}/{account['account']}"
+        (parked if kind == PARKED else errors).append((who, why))
+
     for account in perishable:
         # Deliberately not started. Its session would be dead before a
         # download finished, and a failed attempt teaches the provider's fraud
         # model something about us for nothing.
         print(f"  waiting for a person: {account['app']}/{account['account']} "
               f"(session lasts {account['session_lifetime_minutes']} min)")
+        parked.append((f"{account['app']}/{account['account']}",
+                       "needs a person to sign in"))
+
+    return parked, errors
+
+
+def pass_and_notify(apps_root: Path, config_root, today: str) -> int:
+    """One pass, and one message about it if there is anything to say.
+
+    The try/except is not decoration: without it, the single failure that
+    hides every other failure is this module's own. A pass that dies before
+    it can report is exactly the silence the notifications exist to end.
+    """
+    try:
+        parked, errors = one_pass(apps_root, config_root, today)
+    except Exception as e:
+        # The type only, never str(e): SECURITY.md promises a message never
+        # carries anything read off a page, and a raw exception string is
+        # free text - a FileNotFoundError or KeyError commonly carries an
+        # absolute path, which on a native install names the operator. The
+        # print above already has the full detail; an operator has to open
+        # the log for a pass-level failure anyway.
+        print(f"  !! the pass failed: {e}")
+        notify.send("PaperPull: the scheduled pass failed",
+                    f"{type(e).__name__}: see the scheduler log",
+                    tags=("rotating_light",), priority=5)
+        return 1
+
+    said = digest(parked, errors)
+    if said is None:
+        return 0
+    title, body, tags, priority = said
+    notify.send(title, body, tags=tags, priority=priority)
+    return 0
 
 
 def schedule_hour(raw) -> int:
@@ -174,17 +280,28 @@ def main(argv=None) -> int:
         print(f"!! {e}", file=sys.stderr)
         return 2
 
+    # Printed once at startup rather than left to notify.send's own silence:
+    # an install that typo'd PAPERPULL_NTFY_URL, or set it on the wrong
+    # compose service, would otherwise run forever and never say a word,
+    # indistinguishable from "nothing needed you" - the exact invisible
+    # failure this feature exists to end, reproduced one level up.
+    notify_line = ("Notifications: on." if notify.configured()
+                   else "Notifications: off (PAPERPULL_NTFY_URL is not set).")
+
     if args.once:
-        one_pass(apps_root, config_root, date.today().isoformat())
-        return 0
+        # docs/docker.md points people at --once for checking their compose
+        # file, so this is the moment to tell them what they configured.
+        print(notify_line)
+        return pass_and_notify(apps_root, config_root, date.today().isoformat())
 
     print(f"Scheduler up. One pass a day at {hour:02d}:00 local time.")
+    print(notify_line)
     ran_on = ""
     while True:
         now = datetime.now()
         today = now.date().isoformat()
         if now.hour == hour and ran_on != today:
-            one_pass(apps_root, config_root, today)
+            pass_and_notify(apps_root, config_root, today)
             ran_on = today
         # A poll rather than a sleep-until: the container can be restarted at
         # any moment, and `ran_on` being in memory means a restart inside the
