@@ -173,3 +173,98 @@ def test_a_bad_hour_exits_two_rather_than_tracebacking(monkeypatch, capsys):
     monkeypatch.setenv("PAPERPULL_SCHEDULE_HOUR", "25")
     assert schedule.main(["--once"]) == 2
     assert "PAPERPULL_SCHEDULE_HOUR" in capsys.readouterr().err
+
+
+# -- what a run meant, and what gets said about it -------------------------
+
+def _park_account(app="youfone", account="primary"):
+    return {"app": app, "account": account, "output_dir": "/data/youfone",
+            "config": "/config/youfone/config.json"}
+
+
+def test_a_parked_run_is_something_a_person_must_act_on():
+    schedule = _schedule()
+    session = {"state": "parked", "parked_reason": "no signed-in tab"}
+    assert schedule.outcome(_park_account(), 0, session) == (
+        schedule.PARKED, "no signed-in tab")
+
+
+def test_a_clean_run_says_nothing():
+    """The exit code is 0 for both, which is why the session is consulted."""
+    schedule = _schedule()
+    assert schedule.outcome(_park_account(), 0, {"state": "warm"}) is None
+
+
+def test_a_parked_run_with_no_reason_still_asks_for_a_person():
+    schedule = _schedule()
+    kind, why = schedule.outcome(_park_account(), 0, {"state": "parked"})
+    assert kind == schedule.PARKED
+    assert why
+
+
+def test_being_terminated_is_not_an_error():
+    """143 is the container being stopped, or someone pressing Stop."""
+    schedule = _schedule()
+    assert schedule.outcome(_park_account(), schedule.TERMINATED_EXIT, {}) is None
+
+
+def test_a_busy_provider_is_reported():
+    """Transient, but if it stops being transient a wedged lock means this
+    account silently never runs again - which is what this exists to end."""
+    schedule = _schedule()
+    kind, why = schedule.outcome(_park_account(), 4, {})
+    assert kind == schedule.ERROR
+    assert "4" in why
+
+
+def test_any_other_non_zero_exit_is_an_error():
+    schedule = _schedule()
+    assert schedule.outcome(_park_account(), 1, {})[0] == schedule.ERROR
+
+
+def test_a_quiet_pass_has_nothing_to_send():
+    schedule = _schedule()
+    assert schedule.digest([], []) is None
+
+
+def test_the_digest_names_each_account_and_why():
+    schedule = _schedule()
+    title, body, tags, priority = schedule.digest(
+        [("youfone/primary", "no signed-in tab")],
+        [("ally/primary", "exited 1")])
+    assert "youfone/primary" in body and "no signed-in tab" in body
+    assert "ally/primary" in body and "exited 1" in body
+    assert "1" in title
+    assert tags and priority
+
+
+def test_the_digest_says_how_many_need_a_person():
+    schedule = _schedule()
+    title, _, _, _ = schedule.digest(
+        [("a/one", "why"), ("b/two", "why")], [])
+    assert "2" in title
+
+
+def test_a_pass_that_blows_up_still_tells_someone(monkeypatch):
+    """Otherwise the one failure that hides every other failure is this
+    module's own."""
+    schedule = _schedule()
+    sent = []
+    monkeypatch.setattr(schedule.notify, "send",
+                        lambda *a, **k: sent.append((a, k)) or True)
+    monkeypatch.setattr(schedule, "one_pass",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    code = schedule.pass_and_notify(Path("/nowhere"), None, "2026-08-22")
+    assert code != 0
+    assert sent, "a pass that raised sent nothing"
+    assert "boom" in str(sent[0])
+
+
+def test_a_quiet_pass_sends_nothing(monkeypatch):
+    schedule = _schedule()
+    sent = []
+    monkeypatch.setattr(schedule.notify, "send",
+                        lambda *a, **k: sent.append((a, k)) or True)
+    monkeypatch.setattr(schedule, "one_pass", lambda *a, **k: ([], []))
+    assert schedule.pass_and_notify(Path("/nowhere"), None, "2026-08-22") == 0
+    assert sent == []
