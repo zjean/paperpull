@@ -40,17 +40,24 @@ def test_adopting_is_not_exempt_from_the_provider_lock():
 
 
 def test_the_panel_offers_adopt_to_the_page():
-    """The buttons are built from whatever /api/apps returns, so this is what
-    puts it on screen."""
-    assert panel.api_apps()["actions"]["adopt"] == "Adopt identity"
+    """The buttons are built from whatever the panel reports, so this is what
+    puts it on screen. Named for what the user is being asked to do rather
+    than for the flag behind it - "adopt an identity" is the codebase's word,
+    not something a person reads off a screen and understands."""
+    assert panel.api_apps()["actions"]["adopt"] == "Confirm this account"
+    assert panel.ACTIONS["adopt"]["blurb"], "the button has to say what it does"
 
 
 def test_the_page_shows_what_was_adopted():
     """The spec's promise about the bootstrap hole: adoption is the one moment
     identity is taken on trust, so the panel has to show what it recorded for
-    a person to check once. A boolean cannot be checked against anything."""
-    assert "showIdentity" in panel.HTML
-    assert "a.anchors" in panel.HTML
+    a person to check once. A boolean cannot be checked against anything.
+
+    What the anchors actually render as is covered properly in
+    test_identity_display.py, which executes this function. This only pins
+    down that it exists and reads them."""
+    assert "function identityText(" in panel.JS
+    assert "a.anchors" in panel.JS
 
 
 def test_verify_and_a_human_signing_in_stay_exempt():

@@ -12,7 +12,7 @@ in three surfaces upstream has no idea exist:
 | Surface | Lives in | What breaks it |
 |---|---|---|
 | **The container** | `Dockerfile`, `docker/entrypoint.sh`, `docker-compose.yml`, `docker/browser/` | an app that finds its browser somewhere other than `cdp_url`, or ships no `config.example.json` |
-| **The control panel** | `gui/app.py` (the one upstream file this fork edits) | a new action or flag the `ACTIONS` table doesn't know; upstream re-taking the `stdin=PIPE` prompt channel |
+| **The control panel** | `gui/app.py` plus `gui/static/` (**the fork's own now** — rebuilt around accounts, not flags; upstream has no `static/` at all) | a new action or flag the `ACTIONS` table doesn't know; upstream re-taking the `stdin=PIPE` prompt channel |
 | **The scheduler** (the "cron") | `tools/schedule.py`, the `scheduler` compose service | an app that can't run with nobody present, or a new `AppSpec` field that changes what "due" means |
 
 It also owns **two providers upstream doesn't have** — `apps/simyo` and
@@ -246,7 +246,7 @@ upstream-watch workflow opened one, and offer to open an issue per gap.
 
 | File | This fork | On conflict |
 |---|---|---|
-| `gui/app.py` | **The most-edited upstream file.** `_allowed_hosts()` for the reverse-proxy hostname; `_remote_browser()` so Login means `--login`; `_supported_actions()` gating buttons per app; extra `/api/apps` keys (`remote_browser`, `browser_url`, `expect_venvs`, `supported_actions`, `login_flag`); the prompt channel below; the desktop link, gated venv warning and reply row in the HTML. | Take upstream's version, then re-apply all of it. `gui/tests/test_remote_browser.py`, `test_action_gating.py` and `test_prompts.py` tell you when you're done. |
+| `gui/app.py` + `gui/static/` | **No longer an edited copy of upstream's — the panel is this fork's.** Backend only, serving a three-file page from `static/`; `/api/state` (the flat, bucketed, ordered account list the page draws itself from) alongside the older `/api/apps`; `ACTIONS` carrying a label, a sentence and a step per action; `_needs`/`NEEDS` bucketing; `_allowed_hosts()` for the reverse-proxy hostname; `_remote_browser()` so Sign in means `--login`; `_supported_actions()` gating actions per app; the prompt channel below. | **Take ours.** Then read upstream's only for a change to the *command surface* — a new `ACTIONS` entry (give it a label and a blurb), a new `_build_cmd` convention, a change to how apps are discovered. Its page is superseded. `gui/tests/test_remote_browser.py`, `test_action_gating.py`, `test_prompts.py` and `test_state.py` tell you when you're done. |
 | `core/paperpull_core/spec.py` | `AppSpec.session_lifetime_minutes` and `concurrency`, plus their validation. These two fields are what route a provider to unattended cron or to a human sitting. | Keep both sides. Losing a field breaks `due.plan` and every app's spec. |
 | `core/paperpull_core/storage.py` | `ensure_owner(..., unattended=False)` and `Paths.sentinel_json`. | Keep both sides. Dropping the `unattended` parameter means a scheduled run can block on `input()` forever. |
 | `core/paperpull_core/__init__.py`, `core/pyproject.toml` | core bumped to `0.2.0` for the modules the fork added | Keep the higher version — the fork's API is a superset. |

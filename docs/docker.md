@@ -63,9 +63,10 @@ to your Caddyfile. Then:
    You get a real Chrome. Sign in to a provider — 2FA, device approval, bank
    app, DigiD, whatever it takes. Leave the tab open. Pasting a password in
    there needs one browser permission first — see below.
-2. Open **`paperpull.<you>`**, pick that app, and press **Login**. It should say
-   it connected and can see your documents page.
-3. **Pilot**, then **Run All**.
+2. Open **`paperpull.<you>`**. The register lists every account by what it
+   needs, most urgent first; open that one and press **Sign in**. It should
+   say it connected and can see your documents page.
+3. **Try a few**, then **Download everything new**.
 
 Your PDFs land in `./data/<app>/`, alongside that app's `progress.json` and
 index CSV.
@@ -133,9 +134,9 @@ understands `--adopt-identity`.** The other apps here still file whichever
 tab matching the provider's host they find, exactly as they did before this
 section existed; this identity gate is rolled out one provider at a time
 (see the spec, "Phase 1's identity gate covers Simyo only"), and the panel
-only shows the **Adopt identity** button for an app that actually accepts
-it. If you don't see the button for some other provider, that isn't a bug —
-there is nothing to press yet.
+only shows the **Confirm this account** step for an app that actually accepts
+it. If you don't see it for some other provider, that isn't a bug — there is
+nothing to press yet.
 
 If you already had Simyo or Youfone running before this version, do this
 once per account before anything else.
@@ -158,12 +159,12 @@ again, refusing with `(aged)` in the message until you do.
 
 1. Sign in to the provider on the browser desktop, in **one** tab, and check
    the page really shows the account this config is for.
-2. In the panel, pick that app (Simyo or Youfone) and account and press
-   **Adopt identity**.
-3. Read back what it recorded — the panel lists the anchors under the account
-   picker, and it is the one moment those are taken on trust. If they are not
-   this account's documents, you adopted the wrong tab: sign in to the right
-   account and press it again.
+2. In the panel, open that account (Simyo or Youfone) — it sits under
+   **Needs confirming** — and press **Confirm this account**.
+3. Read back what it recorded — the panel prints the anchors on the account's
+   own **Identity** line, and it is the one moment those are taken on trust.
+   If they are not this account's documents, you confirmed the wrong tab: sign
+   in to the right account and press it again.
 
 Or from a shell, the same thing (substitute `youfone`/`youfone_docs.py` for a
 Youfone account):
@@ -227,8 +228,9 @@ which is shorter than a scheduled pass can rely on finding it alive; a
 provider that declares a session lifetime is never started here, on any pass,
 no matter what flags its script has. Instead it is printed as
 `waiting for a person` — the scheduler's way of telling you, and whatever
-reads its log, that this account still needs the panel's **Pilot** or
-**Run All** with you sitting at the browser desktop.
+reads its log, that this account still needs the panel with you sitting at the
+browser desktop. **Start a sitting** is the button for exactly that: it walks
+every such account, one at a time, most perishable session first.
 
 Set `PAPERPULL_SCHEDULE_HOUR` in `.env` to the local hour (0-23, `TZ` already
 set above) you want the daily pass to run. Pick one you are actually awake
@@ -307,7 +309,7 @@ What it will **not** notify about, and why:
 
 - **A clean pass, or a quiet one.** Nothing parked, nothing errored, nothing
   due — there is nothing to act on, so there is nothing to send.
-- **A run you started yourself**, from the panel's Pilot/Run All or a bare
+- **A run you started yourself**, from the panel or a bare
   `python youfone_docs.py` at a terminal. You are looking at that output
   already; a push about something on your own screen is noise, not a signal.
 
@@ -464,8 +466,9 @@ all of it.
 Providers sign you out. Amazon asks whether you are a robot. When that happens
 the app stops and asks for a keypress, and natively you give it one in the
 console window the launcher opened. There is no such window here, so the panel
-is what answers instead: the question appears under the console, with a box to
-type in and a **Continue** button for the ones that only want Enter. When the
+is what answers instead: the question appears under the console, which lights
+up, with a box to type in and a **Continue** button for the ones that only want
+Enter. When the
 question is about your session, a link to the browser desktop appears next to
 it — go and fix it there, then press Continue. The run picks up mid-flight; it
 does not start over.
@@ -477,8 +480,8 @@ row — a whole feature that simply had no way to work here before.
 
 Two consequences worth knowing:
 
-- A run that is waiting waits indefinitely; nothing times it out. **Stop run**
-  is how you end one, and stopping is safe — a document is only marked done
+- A run that is waiting waits indefinitely; nothing times it out. **Stop this
+  run** is how you end one, and stopping is safe — a document is only marked done
   once it is saved, so a later run re-fetches nothing.
 - Answering is one line per question. A pasted line break is collapsed to a
   space rather than being sent as a second answer to whatever the app asks
@@ -502,8 +505,8 @@ That is precisely what a mid-run sign-out used to look like.
 - **The image is ~490MB, the browser image ~4.5GB.** No `playwright install`
   runs in our image; `connect_over_cdp` needs the driver, not a browser binary.
 - **The browser takes a minute or so to be ready** after a cold start: the
-  desktop comes up, then labwc autostarts Chrome. Until then `Login` reports it
-  cannot connect. That is not an error, just impatience.
+  desktop comes up, then labwc autostarts Chrome. Until then **Sign in**
+  reports it cannot connect. That is not an error, just impatience.
 
 ## Security
 

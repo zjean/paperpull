@@ -4,9 +4,13 @@ This is a fork of [rheeloaded/paperpull](https://github.com/rheeloaded/paperpull
 that adds Docker. Upstream keeps adding and fixing **providers**, which is the
 whole reason to keep merging.
 
-The divergence is deliberately small so that stays cheap: **one upstream file is
-edited** (`gui/app.py`), and everything else this fork adds is a new file
-upstream has no version of.
+The divergence is deliberately small so that stays cheap. Everything this fork
+adds is a new file upstream has no version of, with one exception: **the
+control panel is this fork's own now.** `gui/app.py` was an edited copy of
+upstream's until the panel was rebuilt around accounts rather than flags, and
+the page it serves lives in `gui/static/`, which upstream has no counterpart
+for at all. Treat the panel the way you treat `docker/` — ours — and see
+*Resolving conflicts* below for what that means in practice.
 
 ## Branches
 
@@ -77,21 +81,43 @@ Two things can make it produce nothing, and neither is a bug in the workflow:
 `*_docs.py`, `document_rules.json`, `config.example.json` — take upstream's
 version wholesale. This fork has no opinion about how a provider works.
 
-**`gui/app.py` is the one that needs thought.** Take upstream's version, then
-re-apply these three:
+**The control panel is ours. Keep this side.** This used to say "take
+upstream's version, then re-apply these three" — do not do that any more. It
+would delete a panel that no longer resembles upstream's: the page is three
+files in `gui/static/` rather than a string in `app.py`, it draws itself from
+`/api/state` rather than `/api/apps`, and the account-first register, the
+buckets, the numbered path and the on-page sitting have no upstream equivalent
+to merge with.
 
-1. `_allowed_hosts()` — the origin guard has to admit the hostname your reverse
-   proxy serves the panel on, not just localhost.
-2. `_remote_browser()` in `_login_flag()` — with the browser in another
-   container there is nothing to launch, so Login means `--login`.
-3. Three extra keys from `/api/apps` (`remote_browser`, `browser_url`,
-   `expect_venvs`), plus the desktop link and the gated venv warning in the HTML.
+So on a conflict in `gui/app.py`, take **ours**, and then read upstream's
+version for one thing only: whether it has taught the panel something we would
+want. In practice that is a change to the command surface, not to the page —
 
-`gui/tests/test_remote_browser.py` passes when you have them all, and fails if
-you have broken native behaviour while re-applying them.
+- a new entry in `ACTIONS` (a flag upstream's apps grew), which here also needs
+  a `label` and a `blurb`, and a `step` only if it belongs on the ordinary path;
+- a change to how a command is built in `_build_cmd` (a new `--config`
+  convention, say);
+- a change to how an app is discovered (`_entry_script`, `ENTRY_RE`).
+
+Everything else in upstream's `gui/app.py` — the HTML, the CSS, the JS, the
+`/api/apps` shape — is superseded here.
+
+`gui/tests/test_remote_browser.py` still tells you the Docker switches survived
+in both directions, and `gui/tests/test_state.py` tells you the panel still
+explains itself: it fails if an action arrives with no sentence saying what it
+does, which is exactly the state upstream's panel is in.
 
 **Never resolve a conflict by deleting Docker support, or by deleting an
 upstream file.** Both make the next merge worse.
+
+## Why a stale GIF sits in docs/
+
+`docs/control-panel.gif` is upstream's animated demo of upstream's panel, and
+it no longer shows a UI that exists here. Nothing references it — the READMEs
+point at `docs/control-panel.png`, a still of this fork's panel. The GIF stays
+on disk for the same reason the launchers below do: it is an upstream file, and
+deleting one produces a delete/modify conflict on every future merge, forever.
+Ignore it.
 
 ## Why the launchers are still here
 

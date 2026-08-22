@@ -7,6 +7,100 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR** — a new app, or a cross-app feature
 - **MAJOR** — breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Changed
+- **The control panel is now about your accounts, not about flags.** It used to
+  answer one question — "which flag do you want to pass to which app?" — with
+  two dropdowns over eighteen apps and six identically-styled buttons reading
+  Login / Discover / Pilot / Run All / Resume / Verify. Nothing on the page
+  said what any of them did (the word "Pilot" was explained nowhere at all),
+  nothing said which to press first, and two of the six were filled the same
+  blue, so "primary" had stopped meaning anything. The question a person
+  actually opens the panel with — *what needs me?* — had no answer on screen:
+  an account's session state was a suffix inside an `<option>`, so learning it
+  meant selecting all eighteen apps in turn while 85% of the window sat empty.
+
+  What replaced it:
+
+  - **A register of every account**, one line each, grouped by what it needs
+    (*Needs a sign-in* → *Needs confirming* → *Due* → *Nothing to do*) and
+    ordered most-perishable-first inside each group, the same rule
+    `paperpull_core.due` sorts by. The first row is the one to open, so the
+    panel opens it. The masthead counts them.
+  - **Every action says what it does**, in a sentence, on the button. The three
+    that form the ordinary path through a provider (**Sign in** → **Try a few**
+    → **Download everything new**) are numbered, because they genuinely are a
+    sequence; **Confirm this account** joins them as step 2 for the two apps
+    that have an identity gate. The rest fold away under *Other things you can
+    run*. Exactly one action is ever highlighted, and only when there is a real
+    next step for that account.
+  - **A session meter.** An account whose provider declares a session lifetime
+    shows how much of it is left, counting down. A provider that declares none
+    shows no meter rather than a full one — those are different facts.
+  - **The sitting is on the page.** It was three chained `confirm()` dialogs,
+    so the queue could not be reviewed before it started or read while it ran,
+    and `alert()` reported the result. It is now a panel with the queue, where
+    it has got to, and the two buttons that drive it.
+  - **Providers you have never set up are out of the register**, and behind a
+    **+ Add an account** button instead. They were seventeen of eighteen rows
+    on a fresh checkout, each reported as a thing wrong with your install, and
+    most of them are providers a given person will never use.
+  - **Buttons renamed** to what they do rather than what they pass: Login →
+    **Sign in**, Pilot → **Try a few**, Run All → **Download everything new**,
+    Discover → **List what is there**, Resume → **Continue last run**, Verify →
+    **Re-check saved files**, Adopt identity → **Confirm this account**.
+
+- **`gui/app.py` is a backend again.** The page moved out of a 400-line quoted
+  string in the middle of the request handlers into `gui/static/`
+  (`index.html`, `panel.css`, `panel.js`), served `no-store` and read per
+  request, so editing the page is a reload rather than a restart.
+
+### Added
+- **`GET /api/state`** — everything the page draws itself from, in one request:
+  the flat account list with its bucket, session, identity and dates already
+  resolved, plus every action's label and blurb. One endpoint rather than the
+  page cross-joining `/api/apps` and `/api/due` itself, because the buckets are
+  derived from both and computing them twice is how a sidebar starts
+  disagreeing with the detail view beside it. It reports `due_known: false`
+  when `paperpull_core` is not importable, and the page says so plainly — an
+  empty due list would read as "nothing is due", a different and false claim
+  from "this panel cannot tell you".
+- **`POST /api/accounts`** — creates one account's config file, and the
+  panel's only write. Two cases, one operation: a provider you have never set
+  up (copy its tracked `config.example.json`), and a second person's account of
+  one you already use (copy *your* config, then give the new account its own
+  `output_dir`, its own `profile_dir` inside it, and natively its own debugging
+  port). That last part is not a new rule — it is what each app's own
+  `add_account.py` does and what the READMEs promise, and it matters because
+  two accounts sharing an `output_dir` share `progress.json` and
+  `sentinel.json`, so each keeps overwriting the other's record of what it had
+  downloaded and whether it was signed in. In the container the port is left
+  alone, because there is one browser and every app's `cdp_url` points at it on
+  purpose; the response says so. The app name is checked against the apps
+  actually discovered rather than pattern-matched, the label is refused rather
+  than rewritten (lowercase `[a-z0-9_-]`, 1–32 chars — `config.Spouse.json` and
+  `config.spouse.json` are one file on macOS and two on Linux), and an existing
+  config is never overwritten.
+- **`gui/tests/test_add_account.py`** — 40 tests over that route: every refusal,
+  and every field it derives.
+- **`gui/tests/test_state.py`** — the buckets, the ordering, the degraded
+  no-core case, the page's own files, and a test that no action can ship as a
+  bare verb with no sentence explaining it. That last one is the regression
+  this redesign exists to prevent.
+- `docs/control-panel.png`, a current still of the panel.
+
+### Fixed
+- **The identity warning no longer has two ways to lie.** `identity_gated` is
+  now decided server-side from the app's own accepted flags, so the sixteen
+  apps with no identity gate cannot land in the *Needs confirming* bucket, and
+  neither `identityText` nor `nextStep` can point their users at a button that
+  does not exist for them.
+- **"Never seen signed in" is no longer printed in the same vermilion as a
+  session the provider killed.** An absence is not a failure.
+- The register no longer prints "Nothing to do" on every one of sixteen rows
+  under a heading that already says it.
+
 ## [0.11.0] — 2026-08-22
 
 ### Added

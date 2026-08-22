@@ -248,9 +248,11 @@ rather than an error.
 1. Open **`browser.<you>`** and log in with `BROWSER_USER` / `BROWSER_PASSWORD`.
    You get a real Chrome. Sign in to a provider — 2FA, device approval, bank
    app, DigiD, whatever it takes — and **leave the tab open**.
-2. Open **`paperpull.<you>`**, pick that app, press **Login**. It should report
+2. Open **`paperpull.<you>`**. That account is at the top of the register,
+   under **Needs a sign-in**; open it and press **Sign in**. It should report
    that it connected and can see your documents.
-3. **Pilot** downloads the newest few. Then **Run All**.
+3. **Try a few** downloads the newest handful. Then **Download everything
+   new**.
 
 Sign in to as many providers as you like in that one Chrome; each app finds its
 own tab. Your PDFs land in `./data/<app>/`, next to that app's `progress.json`
@@ -290,7 +292,7 @@ statements. Neither is committable; `.gitignore` and `.dockerignore` block both.
 | Container exits: `/config is not writable` | The `chown` in step 2 was skipped, or does not match `PUID`/`PGID`. |
 | Every panel click returns 403 | Your hostname is missing from `PAPERPULL_ALLOWED_HOSTS`. |
 | Panel shows nothing during a run, then everything | The proxy is buffering; `flush_interval -1`. |
-| **Login** says it cannot connect | Give the browser a minute. If it persists, `docker compose logs browser`. |
+| **Sign in** says it cannot connect | Give the browser a minute. If it persists, `docker compose logs browser`. |
 | Downloads are 0 bytes | `PUID`/`PGID` differ between the containers, or the `pw-artifacts` volume was replaced — gotcha #4 in [docs/docker.md](docs/docker.md). |
 | Files on the host are owned by root | `PUID`/`PGID` were left at the default and your user is not 1000. |
 
@@ -318,14 +320,15 @@ setup-all.bat        REM Windows
 ./setup-all.command  # macOS / Linux
 ```
 
-Then either drive everything from the **[GUI control panel](gui)** — pick an
-app and account, click an action, and watch the live output:
+Then either drive everything from the **[GUI control panel](gui)** — it opens
+on whichever of your accounts needs you first, says what it needs and why, and
+tells you which action to press:
 
 ```bat
 gui\run_gui.bat
 ```
 
-![PaperPull control panel](docs/control-panel.gif)
+![PaperPull control panel](docs/control-panel.png)
 
 …or run a single app directly (using `amex` as the example):
 

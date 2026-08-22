@@ -160,8 +160,9 @@ def test_an_account_with_no_sentinel_yet_reports_nothing_known(fake_app):
     _write_config(fake_app, fake_app / "out")
 
     rec = _primary(panel._accounts(fake_app))
-    assert rec == {"name": "primary", "state": "", "last_alive": "",
-                    "parked_reason": "", "identified": False, "anchors": []}
+    assert rec == {"name": "primary", "configured": True, "state": "",
+                   "last_alive": "", "parked_reason": "", "identified": False,
+                   "anchors": []}
 
 
 # -- /api/due: ordering -----------------------------------------------------
@@ -233,3 +234,35 @@ def test_api_due_degrades_instead_of_exploding_when_core_is_unimportable(
     with pytest.raises(HTTPException) as e:
         panel.api_due()
     assert e.value.status_code == 503
+
+
+def test_an_account_with_no_config_at_all_says_so(fake_app):
+    """The panel lists `primary` for every app it discovers, config or no
+    config - which is right, because that is the account you are about to set
+    up. What was wrong was calling it "Nothing to do": with no config.json
+    there is no output_dir, so no sentinel and no progress file can exist, and
+    every other question about the account is about a file that cannot be
+    there. On a fresh checkout that was sixteen of eighteen accounts reported
+    as finished.
+    """
+    rec = _primary(panel._accounts(fake_app))
+    assert rec["configured"] is False
+    assert panel._needs(rec, gated=False, due=False) == "setup"
+
+
+def test_a_configured_account_is_not_sent_back_to_setup(fake_app):
+    """Negative control: writing the config is what clears it."""
+    _write_config(fake_app, fake_app / "out")
+    rec = _primary(panel._accounts(fake_app))
+    assert rec["configured"] is True
+    assert panel._needs(rec, gated=False, due=False) == "ok"
+
+
+def test_setup_sorts_below_the_accounts_that_are_actually_waiting():
+    """It blocks everything for that account, but it has no deadline and no
+    perishable session - so it must not bury a provider whose ten-minute
+    session is due right now."""
+    ranks = panel.NEEDS
+    assert ranks["setup"]["rank"] > ranks["due"]["rank"]
+    assert ranks["setup"]["rank"] > ranks["signin"]["rank"]
+    assert ranks["setup"]["rank"] < ranks["ok"]["rank"]

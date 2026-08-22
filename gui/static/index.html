@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PaperPull</title>
+<link rel="stylesheet" href="/panel.css">
+</head>
+<body>
+
+<!-- The masthead states the one thing the panel is for: how many of your
+     accounts need you right now. Everything else about this page is in
+     service of that number. -->
+<header class="masthead">
+  <div class="wordmark">
+    <span class="wordmark-name">PaperPull</span>
+    <span class="wordmark-ver" id="version">v__VERSION__</span>
+  </div>
+  <p class="tally" id="tally">Reading your accounts&hellip;</p>
+  <div class="masthead-side">
+    <a class="link-out" id="desktop" target="_blank" rel="noopener" hidden>Browser desktop &#8599;</a>
+    <span class="root" id="root"></span>
+  </div>
+</header>
+
+<div class="notices" id="notices"></div>
+
+<main>
+
+  <!-- The register: every account, one line each, grouped by what it needs.
+       This replaces two dropdowns over eighteen apps, where an account's
+       state was a suffix inside an <option> and reading it meant selecting
+       every app in turn. -->
+  <section class="register" aria-label="Accounts">
+    <div class="register-head">
+      <label class="field">
+        <span class="field-label">Filter</span>
+        <input id="filter" type="search" autocomplete="off" spellcheck="false"
+               placeholder="provider or account">
+      </label>
+    </div>
+    <div class="register-list" id="register" role="listbox" aria-label="Accounts"></div>
+    <div class="register-foot">
+      <button class="rail-btn" id="add">
+        <span class="rail-btn-label">+ Add an account</span>
+        <span class="rail-btn-sub" id="addsub"></span>
+      </button>
+      <button class="sitting-start" id="sit">
+        <span class="sitting-start-label">Start a sitting</span>
+        <span class="sitting-start-sub" id="sitsub">accounts whose session dies too fast for a cron job</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- The workbench: one account, what is true about it, and what to do. -->
+  <section class="bench" aria-label="Selected account">
+
+    <!-- A sitting takes over the top of the bench while it runs: the queue,
+         where it is, and the two buttons that drive it. It used to be three
+         chained confirm() dialogs, which could neither be reviewed before
+         starting nor read while running. -->
+    <div class="sitting" id="sitting" hidden>
+      <div class="sitting-head">
+        <h2>Sitting <span class="sitting-count" id="sittingcount"></span></h2>
+        <button class="btn btn-quiet" id="sitstop">End the sitting</button>
+      </div>
+      <ol class="sitting-queue" id="sittingqueue"></ol>
+      <div class="sitting-ask" id="sittingask" hidden>
+        <p id="sittingasktext"></p>
+        <button class="btn btn-paper" id="sitgo">I am signed in &mdash; run it</button>
+        <a class="link-out" id="sitdesktop" target="_blank" rel="noopener" hidden>Open the browser desktop &#8599;</a>
+      </div>
+    </div>
+
+    <!-- Adding an account. The register hides the providers you have never set
+         up - there are seventeen of them on a fresh checkout and most people
+         will never use most of them - so this is how one becomes real. -->
+    <form class="adder" id="adder" hidden>
+      <div class="adder-head">
+        <h2>Add an account</h2>
+        <button type="button" class="btn btn-quiet" id="addcancel">Cancel</button>
+      </div>
+      <div class="adder-row">
+        <label class="field">
+          <span class="field-label">Provider</span>
+          <select id="addapp"></select>
+        </label>
+        <label class="field">
+          <span class="field-label">Account label</span>
+          <input id="addlabel" autocomplete="off" spellcheck="false" placeholder="primary">
+        </label>
+        <button type="submit" class="btn btn-paper" id="addgo">Create it</button>
+      </div>
+      <p class="adder-note" id="addnote"></p>
+    </form>
+
+    <div class="detail" id="detail" hidden>
+      <div class="detail-head">
+        <h1 class="detail-title">
+          <span id="dprovider"></span><span class="detail-slash">/</span><span class="detail-account" id="daccount"></span>
+        </h1>
+        <span class="stamp" id="dstamp"></span>
+      </div>
+      <p class="detail-why" id="dwhy"></p>
+
+      <!-- Facts, not decoration: each row is a thing that decides what you
+           should press next. The session meter is the one graphic on this
+           page, and it earns it - session perishability is the whole reason
+           some of these accounts need a person at all. -->
+      <dl class="facts">
+        <div class="fact">
+          <dt>Session</dt>
+          <dd id="fsession">
+            <div class="meter" id="meter" hidden><span class="meter-fill" id="meterfill"></span></div>
+            <span id="fsessiontext"></span>
+          </dd>
+        </div>
+        <div class="fact">
+          <dt>Identity</dt>
+          <dd id="fidentity"></dd>
+        </div>
+        <div class="fact">
+          <dt>Newest document</dt>
+          <dd id="fnewest"></dd>
+        </div>
+        <div class="fact">
+          <dt>Last looked</dt>
+          <dd id="flooked"></dd>
+        </div>
+      </dl>
+
+      <p class="warn" id="venvwarn" hidden></p>
+
+      <h2 class="bench-heading">What now</h2>
+      <div class="path" id="path"></div>
+      <details class="more" id="more">
+        <summary>Other things you can run</summary>
+        <div class="more-grid" id="moregrid"></div>
+      </details>
+    </div>
+
+    <p class="bench-empty" id="benchempty">Pick an account on the left.</p>
+
+    <!-- The console. Empty at rest and it says so; a run's output pushes the
+         detail above it out of the way rather than appearing in a void. -->
+    <section class="console-wrap" id="consolewrap" aria-label="Run output">
+      <div class="console-head">
+        <span class="dot" id="dot"></span>
+        <span class="console-status" id="statustext">Nothing running</span>
+        <span class="console-cmd" id="cmdlabel"></span>
+      </div>
+      <pre class="console" id="console" tabindex="0"></pre>
+      <div class="reply" id="reply" hidden>
+        <span class="reply-prompt" id="prompt"></span>
+        <div class="reply-row">
+          <input id="answer" autocomplete="off" spellcheck="false"
+                 placeholder="type your answer, or just press Continue">
+          <button class="btn btn-paper" id="continue">Continue</button>
+          <a class="link-out" id="signin" target="_blank" rel="noopener" hidden>Sign in on the browser desktop &#8599;</a>
+          <button class="btn btn-stop" id="stop">Stop this run</button>
+        </div>
+      </div>
+    </section>
+  </section>
+</main>
+
+<footer>
+  <span>Read-only. Runs on this machine, beside the browser you sign in with.</span>
+  <a href="https://ko-fi.com/rheeloaded" target="_blank" rel="noopener">Support PaperPull on Ko-fi</a>
+</footer>
+
+<script src="/panel.js"></script>
+</body>
+</html>

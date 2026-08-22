@@ -1,9 +1,9 @@
-r"""Receipt & Statement Downloaders - local control panel.
+r"""PaperPull - local control panel.
 
-A tiny FastAPI app that discovers the downloader apps, lists their accounts,
-and runs an action (Login / Discover / Pilot / Run All / Resume / Verify),
-streaming the live output to the browser. It only ever runs the predefined
-per-app commands - nothing from user input is passed to a shell.
+A small FastAPI app that discovers the downloader apps, works out what each
+account needs from a person, and runs one action at a time, streaming the live
+output to the browser. It only ever runs the predefined per-app commands -
+nothing from user input is passed to a shell.
 
 Run it:  python -m uvicorn app:app --port 8765   (or use run_gui.bat)
 Then open http://127.0.0.1:8765
@@ -11,6 +11,12 @@ Then open http://127.0.0.1:8765
 By default it drives the apps in ../apps. Point it at your existing working
 copies instead with the APPS_ROOT environment variable, e.g.:
   set APPS_ROOT=C:\path\to\Receipt and Statement Downloader
+
+The page itself lives in static/ (index.html, panel.css, panel.js) rather than
+in a string in this file. That split is what lets the panel be a real UI - one
+that can list every account with its state instead of offering six bare verbs
+in a sidebar - without this module growing a five-hundred-line quoted page in
+the middle of its request handlers.
 """
 from __future__ import annotations
 
@@ -29,7 +35,7 @@ from urllib.parse import urlsplit
 
 from anyio import to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 # PaperPull targets Python 3.11+ (README, and core/pyproject.toml's
 # requires-python). Nothing here declared that, so a reader - or a scanner -
@@ -41,14 +47,27 @@ if sys.version_info < (3, 11):
         f"{sys.version_info.major}.{sys.version_info.minor}.")
 
 HERE = Path(__file__).resolve().parent
+STATIC = HERE / "static"
 try:
     VERSION = (HERE.parent / "VERSION").read_text(encoding="utf-8").strip()
 except Exception:
     VERSION = "0.1.0"
 APPS_ROOT = Path(os.environ.get("APPS_ROOT", str(HERE.parent / "apps")))
 
-# action -> argparse flags. run_all / resume get --yes so they don't block on a
-# confirmation prompt. Login is resolved per-app (open-browser vs login).
+# The actions, and what each one is FOR.
+#
+# `flags` is the only part that reaches argv. Everything else is text for the
+# page, and it lives here rather than in panel.js for one reason: the page
+# renders whatever this table says, so an action gained or renamed here shows
+# up correctly on screen without a second edit somewhere that could disagree
+# with it. The old panel had the labels here and the explanations in a wall of
+# paragraphs under the buttons, and the two drifted: the buttons said "Pilot"
+# and nothing on screen said what a pilot was.
+#
+# `blurb` is what the button does, in the second person, from the user's side
+# of the screen - never how it is implemented. `step` marks the three actions
+# that form the ordinary path through a provider, in order; everything with no
+# `step` is a side road and the page files it under "Other things".
 #
 # `adopt` is the one command that records which account a config's tab belongs
 # to, and it exists here because a human-initiated, interactive, once-per-
@@ -59,14 +78,53 @@ APPS_ROOT = Path(os.environ.get("APPS_ROOT", str(HERE.parent / "apps")))
 # (--discover) because --adopt-identity on its own is a modifier, not an
 # action, and would only print the help.
 ACTIONS = {
-    "login":    {"label": "Login",    "flags": ["__LOGIN__"]},
-    "adopt":    {"label": "Adopt identity",
-                 "flags": ["--discover", "--adopt-identity"]},
-    "discover": {"label": "Discover", "flags": ["--discover"]},
-    "pilot":    {"label": "Pilot",    "flags": ["--pilot"]},
-    "all":      {"label": "Run All",  "flags": ["--all", "--yes"]},
-    "resume":   {"label": "Resume",   "flags": ["--resume", "--yes"]},
-    "verify":   {"label": "Verify",   "flags": ["--verify"]},
+    "login": {
+        "label": "Sign in",
+        "blurb": "Opens this provider in a browser. You sign in there "
+                 "yourself and leave the tab open.",
+        # With a remote browser there is no window to open here, so Login
+        # means something different and has to say so - see _login_flag.
+        "blurb_remote": "Checks that PaperPull can see the session you "
+                        "signed in on the browser desktop.",
+        "step": 1,
+        "flags": ["__LOGIN__"],
+    },
+    "pilot": {
+        "label": "Try a few",
+        "blurb": "Downloads the newest handful, so you can watch it work "
+                 "before committing to the lot.",
+        "step": 2,
+        "flags": ["--pilot"],
+    },
+    "all": {
+        "label": "Download everything new",
+        "blurb": "Downloads every document you do not already have. Safe to "
+                 "re-run - nothing is ever fetched twice.",
+        "step": 3,
+        "flags": ["--all", "--yes"],
+    },
+    "adopt": {
+        "label": "Confirm this account",
+        "blurb": "Records which account the signed-in tab belongs to. Once "
+                 "per account; runs refuse to file documents until you have.",
+        "flags": ["--discover", "--adopt-identity"],
+    },
+    "discover": {
+        "label": "List what is there",
+        "blurb": "Asks the provider which documents exist. Downloads nothing.",
+        "flags": ["--discover"],
+    },
+    "resume": {
+        "label": "Continue last run",
+        "blurb": "Picks an interrupted run up where it stopped, from the list "
+                 "it already has.",
+        "flags": ["--resume", "--yes"],
+    },
+    "verify": {
+        "label": "Re-check saved files",
+        "blurb": "Re-reads the PDFs already on disk. Opens no browser.",
+        "flags": ["--verify"],
+    },
 }
 ENTRY_RE = re.compile(r".*_(receipts|docs)\.py$")
 
@@ -260,8 +318,7 @@ def _sentinel_for(app_dir: Path, account: str) -> dict:
     function has to work with no core at all. If the resolution rule ever
     changes, both sides change.
     """
-    name = "config.json" if account == "primary" else f"config.{account}.json"
-    cfg_path = _config_dir(app_dir) / name
+    cfg_path = _config_path(app_dir, account)
     try:
         cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
         out_dir = Path(cfg["output_dir"])
@@ -282,6 +339,11 @@ def _sentinel_for(app_dir: Path, account: str) -> dict:
         return {}
 
 
+def _config_path(app_dir: Path, account: str) -> Path:
+    name = "config.json" if account == "primary" else f"config.{account}.json"
+    return _config_dir(app_dir) / name
+
+
 def _accounts(app_dir: Path):
     out = []
     for name in _account_names(app_dir):
@@ -291,6 +353,13 @@ def _accounts(app_dir: Path):
         anchors = identity_rec.get("anchors")
         out.append({
             "name": name,
+            # Only `primary` can be missing: every other account label is
+            # derived from a config.<name>.json that therefore exists. Without
+            # one, no action can run at all - and the panel used to report
+            # exactly that account as "Nothing to do", which is the opposite
+            # of true. `output_dir` alone decides where documents land, so
+            # there is nothing to fall back on.
+            "configured": _config_path(app_dir, name).is_file(),
             "state": session.get("state", ""),
             "last_alive": session.get("last_verified_alive", ""),
             "parked_reason": session.get("parked_reason", ""),
@@ -333,8 +402,34 @@ def discover_apps():
     return apps
 
 
+def _action_text(remote: bool) -> dict:
+    """The action table as the page needs it: text only, no flags.
+
+    `blurb_remote` collapses into `blurb` here rather than being resolved in
+    the page, because whether the browser is in another container is a fact
+    about this deployment and the page should not have to reason about it
+    twice (it already did, in a hand-written three-line "steps" paragraph
+    that had to be rewritten in JS for the remote case).
+    """
+    out = {}
+    for key, spec in ACTIONS.items():
+        blurb = spec.get("blurb", "")
+        if remote and spec.get("blurb_remote"):
+            blurb = spec["blurb_remote"]
+        out[key] = {"label": spec["label"], "blurb": blurb,
+                    "step": spec.get("step")}
+    return out
+
+
 @app.get("/api/apps", dependencies=[Depends(_same_origin_only)])
 def api_apps():
+    """The app list, unchanged in shape.
+
+    `actions` is still key -> label, a plain string map, because that is what
+    it has always been and other readers (tests, anything scripting the
+    panel) rely on it. The page uses /api/state below instead, which carries
+    the same labels plus the blurb and the ordering it needs to explain them.
+    """
     apps = discover_apps()
     remote = _remote_browser()
     return {"apps_root": str(APPS_ROOT),
@@ -347,6 +442,163 @@ def api_apps():
             # In the image every app runs on the one interpreter, so a missing
             # per-app .venv is normal and must not be reported as a problem.
             "expect_venvs": not remote}
+
+
+# ---------------------------------------------------------------------------
+# What needs a person
+# ---------------------------------------------------------------------------
+#
+# The panel used to answer one question - "which flag do you want to pass to
+# which app?" - and answered it with two dropdowns over eighteen apps. The
+# question a person actually opens it with is "what needs me?", and nothing on
+# screen answered that: an account's state was a suffix inside an <option>,
+# so learning it meant selecting all eighteen apps in turn.
+#
+# So the page is built around one flat, ordered list of accounts, each carrying
+# what it needs and why. The buckets are computed here rather than in the page
+# because they are a real rule about this domain, testable in Python, and
+# because the sidebar and the detail view must never disagree about which one
+# an account is in.
+
+# Ranked by what a person can do about it, most actionable first. A parked
+# account cannot do anything until someone signs in, so it outranks an
+# unconfirmed identity (which itself needs a signed-in tab to confirm against).
+NEEDS = {
+    "signin": {"rank": 0, "stamp": "Sign in",
+               "why": "The provider signed this session out. Nothing runs "
+                      "until someone signs in again."},
+    "confirm": {"rank": 1, "stamp": "Confirm",
+                "why": "No identity recorded yet. Runs refuse to file "
+                       "documents until you confirm which account this is."},
+    "due": {"rank": 2, "stamp": "Due",
+            "why": "Enough time has passed since the newest document that "
+                   "the next one is plausibly there."},
+    # Blocking, but not urgent, and not perishable - so it sits below the
+    # accounts that are actually waiting rather than burying them. On a fresh
+    # checkout this is most of the list.
+    "setup": {"rank": 3, "stamp": "Set up",
+              "why": "There is no config.json for this account yet. Copy the "
+                     "app's config.example.json to config.json and set "
+                     "output_dir. Nothing can run until you do."},
+    "ok": {"rank": 4, "stamp": "Filed",
+           "why": "Nothing to do. Checked recently enough."},
+}
+
+# Sorts providers that declare no session lifetime after every provider that
+# does - the same rule, and the same reason, as paperpull_core.due._PATIENT:
+# an account whose session dies in ten minutes cannot queue behind nine whose
+# sessions last for days.
+_PATIENT = 10 ** 9
+
+
+def _needs(account: dict, gated: bool, due: bool) -> str:
+    """Which bucket this account is in. One rule, one place.
+
+    `due` arrives as a bool from the same due.plan the scheduler and
+    tools/due.py use, so the panel cannot disagree with them about who is
+    waiting. When the core is unimportable there is no such answer, and the
+    caller passes False: an account then reads as "Filed", which is honest
+    only because the page also says, plainly, that it cannot tell what is due
+    here. Silently calling everything "Filed" without that sentence would be
+    the lie.
+    """
+    if not account.get("configured", True):
+        # Ahead of every other test: a sentinel, a session and an identity all
+        # live under the output_dir this missing file would have named, so
+        # every other answer here would be about a file that cannot exist.
+        return "setup"
+    if account["state"] == "parked":
+        return "signin"
+    if gated and not account["identified"]:
+        return "confirm"
+    return "due" if due else "ok"
+
+
+def _account_rows(apps: dict, core) -> list:
+    """Every app/account pair as one flat, ordered list for the page.
+
+    Two sources, joined here: `apps` (this module's own read of each app's
+    configs and sentinel - which always works, core or no core) and, when the
+    core loads, appload.accounts + due.plan for the facts that need an app's
+    declared spec (how perishable its session is) and its progress file (what
+    the newest document was). The join key is (app, account).
+    """
+    extra, due_keys = {}, set()
+    if core is not None:
+        try:
+            rows = core.appload.accounts(APPS_ROOT, _config_root())
+            extra = {(r["app"], r["account"]): r for r in rows}
+            due_keys = {(r["app"], r["account"])
+                        for r in core.due.plan(rows, date.today().isoformat())}
+        except Exception:
+            # A single unreadable spec or progress file must not cost the page
+            # its account list - the one thing it must always be able to draw.
+            extra, due_keys = {}, set()
+
+    out = []
+    for app_name, meta in apps.items():
+        gated = "adopt" in meta["supported_actions"]
+        for acc in meta["accounts"]:
+            key = (app_name, acc["name"])
+            row = extra.get(key, {})
+            lifetime = row.get("session_lifetime_minutes")
+            needs = _needs(acc, gated, key in due_keys)
+            out.append({
+                "app": app_name,
+                "account": acc["name"],
+                "needs": needs,
+                "state": acc["state"],
+                "last_alive": acc["last_alive"],
+                "parked_reason": acc["parked_reason"],
+                "identity_gated": gated,
+                "identified": acc["identified"],
+                "anchors": acc["anchors"],
+                # None means "this provider never said" - which is exactly
+                # what makes it patient enough for a cron job, and is why the
+                # page must show the absence rather than a zero.
+                "session_lifetime_minutes": lifetime,
+                "newest_document_date": row.get("newest_document_date", ""),
+                "last_checked_date": row.get("last_checked_date", ""),
+                "supported_actions": meta["supported_actions"],
+                "has_venv": meta["has_venv"],
+            })
+    out.sort(key=lambda r: (
+        NEEDS[r["needs"]]["rank"],
+        _PATIENT if r["session_lifetime_minutes"] is None
+        else int(r["session_lifetime_minutes"]),
+        r["app"], r["account"]))
+    return out
+
+
+@app.get("/api/state", dependencies=[Depends(_same_origin_only)])
+def api_state():
+    """Everything the page needs to draw itself, in one request.
+
+    One endpoint rather than the page cross-joining /api/apps and /api/due
+    itself: the buckets in `accounts` are derived from both, and computing
+    them in two places is how a sidebar starts disagreeing with the detail
+    view next to it.
+
+    `due_known` is the honest half of the degraded case. Without the core
+    there is no due list, and an empty one would read as "nothing is due" -
+    a different and false claim from "this panel cannot tell you". The page
+    says which of the two it is.
+    """
+    core = _core()
+    apps = discover_apps()
+    remote = _remote_browser()
+    return {
+        "version": VERSION,
+        "apps_root": str(APPS_ROOT),
+        "remote_browser": remote,
+        "browser_url": os.environ.get("PAPERPULL_BROWSER_URL", "").strip(),
+        "expect_venvs": not remote,
+        "actions": _action_text(remote),
+        "needs": NEEDS,
+        "today": date.today().isoformat(),
+        "due_known": core is not None,
+        "accounts": _account_rows(apps, core),
+    }
 
 
 def _build_cmd(app_meta: dict, account: str, action: str):
@@ -443,10 +695,10 @@ def api_due():
 
     Same inputs and the same ordering `python tools/due.py` would print, so
     the panel and that script never disagree about who is waiting. This is
-    what "Start sitting" walks: sign in, run, tear down, sign in to the
-    next - one provider session at a time, most-perishable-first so a
-    ten-minute session never queues behind nine that last for days.
-    Read-only: it opens no browser and starts nothing.
+    what a sitting walks: sign in, run, tear down, sign in to the next - one
+    provider session at a time, most-perishable-first so a ten-minute session
+    never queues behind nine that last for days. Read-only: it opens no
+    browser and starts nothing.
 
     The import is guarded for the same reason _busy_holder's is (see _core):
     gui/requirements.txt is all a native install promises to have, and
@@ -455,8 +707,8 @@ def api_due():
     quietly paper over with a default - returning an empty "due": [] would
     read as "nothing is due today", a different and false claim from "the
     panel cannot tell you what is due". So this reports a 503 instead, and
-    the page's Start Sitting button treats the two answers differently: an
-    empty list means stand down, a failed fetch means something is broken.
+    the page's sitting treats the two answers differently: an empty list
+    means stand down, a failed fetch means something is broken.
     """
     core = _core()
     if core is None:
@@ -464,6 +716,172 @@ def api_due():
     accounts = core.appload.accounts(APPS_ROOT, _config_root())
     today = date.today().isoformat()
     return {"today": today, "due": core.due.plan(accounts, today)}
+
+
+# ---------------------------------------------------------------------------
+# Adding an account
+# ---------------------------------------------------------------------------
+#
+# Setting an account up meant hand-copying config.example.json to config.json
+# and editing it, and until you had, the panel listed that account as one more
+# thing wrong with your install - seventeen of eighteen rows on a fresh
+# checkout, none of which most people will ever use. So the register hides
+# them, and this is the button that turns one into a real account.
+#
+# It is the only endpoint that writes, and the rule for what it writes is not
+# invented here: it is the one every app's own add_account.py already applies
+# and the READMEs already promise - "its own profile, port and output folders,
+# so no data mixes". Two accounts of one provider sharing an output_dir would
+# share progress.json and sentinel.json, so each would keep overwriting the
+# other's idea of what it had downloaded and whether it was signed in.
+
+# The label becomes a filename (config.<label>.json) and a directory suffix,
+# so it is restricted rather than sanitised: silently rewriting what someone
+# typed produces an account under a name they did not choose and cannot guess.
+ACCOUNT_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+
+# config.example.json is the template, not an account - _account_names skips
+# it, so an account by that name would be created and then never listed.
+RESERVED_LABELS = {"example"}
+
+# What each extra account's debugging port is offset by, natively. Upstream
+# gives every account its own browser profile on its own port; add_account.py
+# uses the same step.
+PORT_STEP = 10
+
+
+def _template_config(app_dir: Path):
+    """(the config to base a new account on, whether it is a real account).
+
+    A provider's own config.json first, because a second account of a provider
+    you already use should differ from the first only in the ways it has to.
+    The tracked config.example.json otherwise, which is the case for a provider
+    you have never set up.
+    """
+    primary = _config_path(app_dir, "primary")
+    if primary.is_file():
+        return primary, True
+    example = app_dir / "config.example.json"
+    return (example, False) if example.is_file() else (None, False)
+
+
+def _new_account_config(app_dir: Path, label: str, existing: int) -> dict:
+    """The config to write for a new account of this app.
+
+    `existing` is how many accounts this app already has, and it is what keeps
+    two additions from landing on one port: the first extra account steps once,
+    the second twice.
+    """
+    source, from_account = _template_config(app_dir)
+    if source is None:
+        raise HTTPException(
+            400, f"{app_dir.name} ships no config.example.json, so there is "
+                 f"no template to copy. Write its config.json by hand.")
+    try:
+        cfg = json.loads(source.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise HTTPException(400, f"cannot read {source.name}: {e}")
+    if not isinstance(cfg, dict):
+        raise HTTPException(400, f"{source.name} is not a JSON object")
+
+    # `primary` copied straight from the shipped example is the setup this
+    # project documents everywhere; there is nothing to move out of the way.
+    if label == "primary" and not from_account:
+        return cfg
+
+    # Everything below is about not mixing this account's data with another's.
+    out = Path(str(cfg.get("output_dir") or "."))
+    # "." is every shipped example's value and means "the app's own folder",
+    # which has no name to append a label to - so the new account gets a
+    # subfolder rather than a renamed sibling.
+    out_new = Path(label) if out.name in ("", ".") \
+        else out.parent / f"{out.name} - {label}"
+    profile = Path(str(cfg.get("profile_dir") or "./browser-profile")).name
+    cfg["output_dir"] = str(out_new)
+    cfg["profile_dir"] = str(out_new / profile)
+    # The account holder's name, which the panel cannot ask for (it hands a
+    # run a pipe, and an app only asks for it on a real console). The label is
+    # a better guess than the blank it would otherwise keep forever.
+    if not str(cfg.get("owner") or "").strip():
+        cfg["owner"] = label.replace("-", " ").replace("_", " ").title()
+
+    # Its own debugging port - but only where every app has its own browser.
+    # In the container there is exactly one browser and every app's cdp_url
+    # points at it on purpose (docs/docker.md, "One shared browser"), so
+    # stepping the port here would aim this account at nothing at all. A
+    # second person's accounts get a second browser service, and that is a
+    # compose-file decision, not one this endpoint can make.
+    url = str(cfg.get("cdp_url") or "")
+    if url and _config_root() is None:
+        m = re.search(r":(\d+)", url)
+        if m:
+            port = int(m.group(1)) + PORT_STEP * max(existing, 1)
+            cfg["cdp_url"] = url[:m.start(1)] + str(port) + url[m.end(1):]
+    return cfg
+
+
+@app.post("/api/accounts", dependencies=[Depends(_same_origin_only)])
+async def api_add_account(request: Request):
+    """Create one account's config file. The panel's only write."""
+    body = await _json_body(request)
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected an object")
+    app_name = body.get("app")
+    label = body.get("account", "primary")
+    if not isinstance(app_name, str) or not isinstance(label, str):
+        raise HTTPException(400, "app and account must be strings")
+    label = label.strip()
+
+    # The app name reaches the filesystem, so it is checked against the apps
+    # actually discovered rather than pattern-matched: "../.." is not a
+    # discovered app, and neither is anything else that is not there.
+    apps = discover_apps()
+    if app_name not in apps:
+        raise HTTPException(404, f"unknown app {app_name!r}")
+    if not ACCOUNT_LABEL_RE.match(label):
+        raise HTTPException(
+            400, "an account label is 1-32 characters of lowercase a-z, 0-9, "
+                 "- or _, starting with a letter or digit. It becomes a "
+                 "filename, so it is refused rather than quietly rewritten - "
+                 "and lowercase only, because config.Spouse.json and "
+                 "config.spouse.json are one file on macOS and Windows and "
+                 "two on Linux.")
+    if label in RESERVED_LABELS:
+        raise HTTPException(400, f"{label!r} is reserved")
+
+    app_dir = Path(apps[app_name]["dir"])
+    dest = _config_path(app_dir, label)
+    if dest.exists():
+        raise HTTPException(409, f"{app_name}/{label} already exists")
+
+    existing = len(apps[app_name]["accounts"])
+    cfg = _new_account_config(app_dir, label, existing)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Exclusive create, so two clicks racing cannot have the second
+        # silently overwrite the first's config - the check above is a
+        # courtesy, this is the guarantee.
+        with open(dest, "x", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+            fh.write("\n")
+    except FileExistsError:
+        raise HTTPException(409, f"{app_name}/{label} already exists")
+    except OSError as e:
+        raise HTTPException(500, f"cannot write {dest}: {e}")
+
+    # Resolved, not as written. Every shipped example says "output_dir": ".",
+    # which is meaningful to the downloader (launched with its own directory as
+    # the working directory) and meaningless on screen - the page reported that
+    # a new account would file its documents "into .".
+    written = Path(str(cfg.get("output_dir") or "."))
+    resolved = written if written.is_absolute() else (app_dir / written)
+    return {"app": app_name, "account": label, "config": str(dest),
+            "output_dir": str(resolved),
+            "cdp_url": str(cfg.get("cdp_url", "")),
+            # Said out loud rather than left for someone to discover: the
+            # container has one browser, so a second person's account needs a
+            # second browser service and this file pointed at it.
+            "shared_browser": _config_root() is not None and label != "primary"}
 
 
 # ---------------------------------------------------------------------------
@@ -710,461 +1128,45 @@ def api_run(app: str, account: str = "primary", action: str = "pilot"):
                                       "X-Accel-Buffering": "no"})
 
 
+# ---------------------------------------------------------------------------
+# The page
+# ---------------------------------------------------------------------------
+
+
+def _asset(name: str) -> str:
+    """One file out of static/.
+
+    Read per request rather than cached, so editing the page is a reload
+    rather than a restart. Three small local file reads per page load, on a
+    panel serving one person on localhost.
+    """
+    return (STATIC / name).read_text(encoding="utf-8")
+
+
+# Import-time snapshots, for readers that want the page as data rather than
+# over HTTP - the tests, which assert against the real markup and execute the
+# real JS. The routes below re-read instead (see _asset), so the two differ
+# only for a file edited after import, which is what each caller wants.
+HTML = _asset("index.html")
+CSS = _asset("panel.css")
+JS = _asset("panel.js")
+
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return HTML.replace("__VERSION__", VERSION)
+    return HTMLResponse(_asset("index.html").replace("__VERSION__", VERSION),
+                        headers=_NO_STORE)
 
 
-HTML = r"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PaperPull</title>
-<style>
-  :root { color-scheme: light dark; --bg:#0f1115; --panel:#171a21; --fg:#e6e6e6;
-          --muted:#98a0ad; --accent:#4c8dff; --line:#262b36; --ok:#3ecf8e; }
-  * { box-sizing: border-box; }
-  body { margin:0; font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif;
-         background:var(--bg); color:var(--fg); display:flex; flex-direction:column; height:100vh; }
-  header { padding:18px 22px; border-bottom:1px solid var(--line); }
-  header h1 { margin:0; font-size:18px; }
-  header h1 .tag { color:var(--muted); font-weight:400; }
-  header h1 .ver { color:var(--accent); font-weight:400; font-size:13px; vertical-align:middle; }
-  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
-  main { display:grid; grid-template-columns: 320px 1fr; gap:0; flex:1; min-height:0; }
-  footer { padding:8px 22px; border-top:1px solid var(--line); font-size:12px;
-           color:var(--muted); display:flex; justify-content:space-between; align-items:center; }
-  footer a { color:var(--accent); text-decoration:none; }
-  footer a:hover { text-decoration:underline; }
-  .controls { padding:20px 22px; border-right:1px solid var(--line); overflow:auto; }
-  label { display:block; font-size:12px; text-transform:uppercase; letter-spacing:.04em;
-          color:var(--muted); margin:16px 0 6px; }
-  select { width:100%; padding:9px 10px; background:var(--panel); color:var(--fg);
-           border:1px solid var(--line); border-radius:8px; font-size:14px; }
-  .actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:20px; }
-  button { padding:10px; border:1px solid var(--line); border-radius:8px; cursor:pointer;
-           background:var(--panel); color:var(--fg); font-size:14px; }
-  button:hover { border-color:var(--accent); }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; grid-column:1/3; }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  .hint { font-size:12px; color:var(--muted); margin-top:16px; }
-  a.desktop { display:none; margin-top:14px; padding:10px; text-align:center;
-              border:1px solid var(--accent); border-radius:8px; color:var(--accent);
-              text-decoration:none; font-size:14px; }
-  a.desktop:hover { background:var(--panel); }
-  .warn { color:#ffcf6b; }
-  .console { background:#0b0d11; margin:0; padding:16px 20px; overflow:auto; flex:1;
-             min-height:0; font:13px/1.55 ui-monospace,Consolas,monospace; white-space:pre-wrap; }
-  /* Answering a prompt. Present for the whole run, highlighted only while
-     something is actually waiting - the apps pause on a sign-out, a security
-     challenge, and every receipt the --verify pass offers to relabel. */
-  .reply { border-top:1px solid var(--line); padding:10px 20px; background:var(--panel); }
-  .reply.pending { border-top:2px solid var(--accent); }
-  .reply .prompt { display:block; min-height:1.5em; margin-bottom:8px; color:var(--accent);
-                   font:13px/1.5 ui-monospace,Consolas,monospace; white-space:pre-wrap; }
-  .reply .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  .reply input { flex:1; min-width:160px; padding:9px 10px; background:var(--bg);
-                 color:var(--fg); border:1px solid var(--line); border-radius:8px;
-                 font:14px/1.4 ui-monospace,Consolas,monospace; }
-  .reply input:focus { outline:none; border-color:var(--accent); }
-  .reply button { white-space:nowrap; }
-  .reply button.stop { margin-left:auto; }
-  a.signin { display:none; color:var(--accent); text-decoration:none; font-size:13px; }
-  a.signin:hover { text-decoration:underline; }
-  .status { padding:8px 20px; border-bottom:1px solid var(--line); font-size:13px; color:var(--muted); }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted); margin-right:8px; }
-  .dot.run { background:var(--accent); animation:pulse 1s infinite; }
-  .dot.ok { background:var(--ok); } .dot.err { background:#ff5c5c; }
-  @keyframes pulse { 50% { opacity:.3; } }
-</style>
-</head>
-<body>
-<header>
-  <h1>PaperPull <span class="ver">v__VERSION__</span><span class="tag"> — Receipt &amp; Statement Downloader</span></h1>
-  <p id="root">control panel</p>
-</header>
-<main>
-  <div class="controls">
-    <label for="app">App</label>
-    <select id="app"></select>
-    <label for="account">Account</label>
-    <select id="account"></select>
-    <p class="hint" id="identity"></p>
-    <div class="actions" id="actions"></div>
-    <button class="primary" id="sit" style="width:100%; margin-top:12px;">▶ Start sitting</button>
-    <p class="hint">One sitting walks every <em>due</em> account across every
-       app, most perishable session first — sign in when asked, watch it run
-       here, then sign in to the next. This is for the providers whose
-       session dies before a cron job would ever catch it awake.</p>
-    <a class="desktop" id="desktop" target="_blank" rel="noopener">🖥 Open browser desktop ↗</a>
-    <p class="hint" id="steps">1. <b>Login</b> opens a browser — sign in yourself and leave it open.<br>
-       2. <b>Pilot</b> tests the newest few.<br>
-       3. <b>Run All</b> downloads everything you don't already have.</p>
-    <p class="hint" style="border-left:3px solid var(--accent); padding-left:10px;">
-       ↻ <b>Safe to re-run.</b> Run All and Resume skip any statement or receipt
-       you've already downloaded — nothing is ever fetched twice, even if you
-       deleted the PDFs after importing them elsewhere.</p>
-    <p class="hint">💬 <b>A run can ask you something.</b> If a provider signs you
-       out mid-run, or asks you to prove you are human, the run pauses and the
-       question appears under the console — fix it in the browser, then press
-       Continue. Nothing is lost while it waits.</p>
-    <p class="hint warn" id="venvwarn" style="display:none"></p>
-  </div>
-  <div style="display:flex; flex-direction:column; min-width:0;">
-    <div class="status"><span class="dot" id="dot"></span><span id="statustext">idle</span></div>
-    <pre class="console" id="console"></pre>
-    <div class="reply" id="reply" hidden>
-      <span class="prompt" id="prompt"></span>
-      <div class="row">
-        <input id="answer" autocomplete="off" spellcheck="false"
-               placeholder="answer the run — Enter to send">
-        <button id="continue">Continue ⏎</button>
-        <a class="signin" id="signin" target="_blank" rel="noopener">🖥 Sign in on the browser desktop ↗</a>
-        <button class="stop" id="stop">Stop run</button>
-      </div>
-    </div>
-  </div>
-</main>
-<footer>
-  <span>PaperPull v__VERSION__ — read-only, runs locally</span>
-  <span>☕ <a href="https://ko-fi.com/rheeloaded" target="_blank" rel="noopener">Support this project on Ko-fi</a></span>
-</footer>
-<script>
-let META = null, es = null, RUN = null, promptTimer = null, promptFrom = 0, stopping = false;
-// A sitting walks several accounts, one run at a time. `sitting` is true for
-// the whole walk; `sittingAbort` is how Stop (see stopRun) or a closed
-// confirm() ends the whole walk rather than just the run in flight.
-// `onRunEnd` is the resolver of whichever run's promise is currently
-// outstanding - set by startRun, called once by endRun - which is how a
-// sitting's `await startRun(...)` wakes up only once the run has actually
-// ended, never before.
-let sitting = false, sittingAbort = false, onRunEnd = null;
-const $ = id => document.getElementById(id);
-const actionButtons = () => document.querySelectorAll('#actions button');
+@app.get("/panel.css")
+def panel_css():
+    return Response(_asset("panel.css"), media_type="text/css",
+                    headers=_NO_STORE)
 
-async function load() {
-  META = await (await fetch('/api/apps')).json();
-  $('root').textContent = 'apps root: ' + META.apps_root;
-  const appSel = $('app');
-  appSel.innerHTML = '';
-  const keys = Object.keys(META.apps);
-  if (!keys.length) { $('console').textContent = 'No apps found under ' + META.apps_root + '.\nSet APPS_ROOT to your downloaders folder.'; return; }
-  for (const k of keys) appSel.append(new Option(META.apps[k].name, k));
-  appSel.onchange = onApp;
-  if (META.remote_browser) {
-    // The browser is not on this machine, so Login cannot open a window here.
-    // It attaches to the shared browser and reports whether you are signed in.
-    $('steps').innerHTML =
-      '1. Sign in on the <b>browser desktop</b>, and leave the tab open there.<br>' +
-      '2. <b>Login</b> checks that PaperPull can see that signed-in session.<br>' +
-      '3. <b>Pilot</b> tests the newest few, then <b>Run All</b>.';
-    if (META.browser_url) { const d = $('desktop'); d.href = META.browser_url; d.style.display = 'block'; }
-  }
-  const acts = $('actions'); acts.innerHTML = '';
-  for (const [k, label] of Object.entries(META.actions)) {
-    const b = document.createElement('button');
-    b.textContent = label; b.className = (k === 'all') ? 'primary' : '';
-    b.dataset.action = k;
-    b.onclick = () => run(k);
-    acts.append(b);
-  }
-  onApp();
-}
-// Not every app's entry script accepts every action - `--adopt-identity`
-// exists only on the apps this feature has reached (gui/app.py's
-// `_supported_actions`). Buttons for this app's own ACTIONS were all built
-// once in load(); this only ever hides some of them, per app, rather than
-// rebuilding - hiding is what stops an unsupported one from ever being
-// pressed and reaching argparse's "unrecognized arguments".
-function updateActionButtons() {
-  const m = META.apps[$('app').value];
-  const supported = new Set(m.supported_actions || []);
-  for (const b of actionButtons()) {
-    b.style.display = supported.has(b.dataset.action) ? '' : 'none';
-  }
-}
-// True only for an app whose entry script accepts --adopt-identity (see
-// _supported_actions). `identified` and `state` come straight off
-// sentinel.json and are permanently false/"" for every OTHER app - not
-// because those accounts failed some check, but because nothing ever asked
-// the question. Without this guard the panel told all 18 apps' users that
-// runs "refuse until you press Adopt identity" and showed "unidentified" on
-// every account, for 16 apps where no run refuses anything and no button
-// exists to press - a dead end, not a warning.
-function identityGated(m) {
-  return (m.supported_actions || []).includes('adopt');
-}
-function onApp() {
-  const m = META.apps[$('app').value];
-  updateActionButtons();
-  const accSel = $('account'); accSel.innerHTML = '';
-  const gated = identityGated(m);
-  const accountLabel = (a) => {
-    if (gated && !a.identified) return a.name + ' · unidentified';
-    if (a.state === 'parked') return a.name + ' · needs sign-in';
-    if (a.state === 'warm') return a.name + ' · alive ' + (a.last_alive || '').slice(0, 16);
-    return a.name;
-  };
-  for (const a of m.accounts) accSel.append(new Option(accountLabel(a), a.name));
-  accSel.onchange = showIdentity;
-  showIdentity();
-  const warn = $('venvwarn');
-  if (!m.has_venv && META.expect_venvs) { warn.style.display='block';
-    warn.textContent = '⚠ No .venv in this app yet — run setup.bat there first, or output may show import errors.'; }
-  else warn.style.display='none';
-}
-// What "this account" was proved to be, spelled out. Adopting an identity is
-// the one moment a run takes on trust that the tab it can see really is this
-// config's account - so the anchors it recorded are shown once, here, for the
-// person who did the adopting to check against the invoices they can see in
-// the browser. textContent throughout: an anchor id is provider data.
-function showIdentity() {
-  const m = META.apps[$('app').value];
-  const a = (m.accounts || []).find(x => x.name === $('account').value);
-  const el = $('identity');
-  if (!a) { el.textContent = ''; return; }
-  if (identityGated(m) && !a.identified) {
-    el.textContent = '⚠ No identity recorded for this account yet. Sign in, '
-      + 'check the browser really shows THIS account, then press Adopt '
-      + 'identity once. Runs that file documents refuse until you have.';
-    return;
-  }
-  if (!a.anchors.length) { el.textContent = ''; return; }
-  el.textContent = 'Identity: this account is recognised by '
-    + a.anchors.map(x => `${x.id} (${x.date})`).join(', ')
-    + '. Check those belong to it.';
-}
-function setStatus(cls, text) { $('dot').className = 'dot ' + cls; $('statustext').textContent = text; }
 
-// -- the console, and the prompts that appear in it ------------------------
-// Output arrives as raw chunks rather than whole lines, because input() writes
-// its prompt without a newline. That is also how a prompt is spotted: output
-// that stops mid-line and stays that way is an app waiting for an answer.
-function append(text) {
-  const con = $('console');
-  con.textContent += text;
-  con.scrollTop = con.scrollHeight;
-}
-function tailLine() {
-  const t = $('console').textContent;
-  return t.slice(t.lastIndexOf('\n') + 1);
-}
-function watchForPrompt() {
-  clearTimeout(promptTimer);
-  if ($('console').textContent.endsWith('\n')) { clearPrompt(); return; }
-  promptTimer = setTimeout(markPrompt, 400);
-}
-function markPrompt() {
-  if (!RUN) return;
-  $('reply').classList.add('pending');
-  $('prompt').textContent = tailLine().trim() || 'Waiting for an answer.';
-  $('answer').focus();
-  // A sign-out or a challenge is fixed in the browser itself, which in a
-  // container is somewhere else entirely — so say where. Only what the app
-  // printed since the LAST answer counts: read further back and the sign-out
-  // wording from an earlier pause still matches, and every later prompt (the
-  // --verify pass asks once per receipt) wrongly points at the desktop.
-  const recent = $('console').textContent.slice(promptFrom);
-  const needsBrowser = /signed you out|sign in|challenge|verification|captcha|robot/i.test(recent);
-  const link = $('signin');
-  if (needsBrowser && META.browser_url) { link.href = META.browser_url; link.style.display = 'inline-block'; }
-  else link.style.display = 'none';
-}
-function clearPrompt() {
-  clearTimeout(promptTimer);
-  $('reply').classList.remove('pending');
-  $('prompt').textContent = '';
-  $('signin').style.display = 'none';
-}
-async function answer() {
-  if (!RUN) return;
-  const text = $('answer').value;
-  const r = await fetch('/api/answer', {method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({run: RUN, text})});
-  if (!r.ok) { append('\n[nothing is waiting for an answer]\n'); clearPrompt(); return; }
-  // The run has a pipe, not a terminal, so it never echoes what we sent.
-  append(text + '\n');
-  promptFrom = $('console').textContent.length;
-  $('answer').value = '';
-  syncAnswerButton();
-  clearPrompt();
-}
-async function stopRun() {
-  if (!RUN) return;
-  stopping = true;
-  // Mid-sitting, Stop has to end the whole sitting - not just this one run,
-  // leaving the loop free to sign the next account in regardless. Otherwise
-  // the one button a person reaches for to bail out would not actually bail
-  // out of anything but the current account.
-  if (sitting) sittingAbort = true;
-  setStatus('run', 'stopping…');
-  await fetch('/api/stop', {method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({run: RUN})});
-}
-function syncAnswerButton() {
-  $('continue').textContent = $('answer').value ? 'Send ⏎' : 'Continue ⏎';
-}
-$('continue').onclick = answer;
-$('stop').onclick = stopRun;
-$('answer').oninput = syncAnswerButton;
-$('answer').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); answer(); } };
-
-function endRun(cls, text) {
-  setStatus(cls, text);
-  RUN = null;
-  clearPrompt();
-  $('reply').hidden = true;
-  actionButtons().forEach(b => b.disabled = false);
-  // Only re-enable Start Sitting if no sitting is in progress. Between two
-  // accounts' runs a sitting is still live (it is inside a blocking
-  // confirm() for the next one), and Start Sitting must stay disabled for
-  // that whole stretch too - not just while a subprocess is actually
-  // running - or a second click there would re-enter startSitting.
-  if (!sitting) $('sit').disabled = false;
-  if (es) { es.close(); es = null; }
-  // This is the one place a run is decided to be over - reached from the
-  // server's "done" event and from a lost connection alike (see startRun).
-  // Waking a sitting's `await startRun(...)` here, rather than anywhere
-  // else, is what stops it from ever signing the next account in while this
-  // one's subprocess might still be holding the provider's session slot.
-  if (onRunEnd) { const resolve = onRunEnd; onRunEnd = null; resolve(); }
-}
-function run(action) {
-  startRun($('app').value, $('account').value, action);
-}
-// Starts one run and returns a Promise that resolves once endRun has been
-// called for it - i.e. once the server has actually said "done" (or the
-// connection was lost), never merely once the request went out. A sitting
-// awaits this before touching the next account.
-//
-// There is no "end" SSE event in this protocol, only "run" (the very first
-// frame, carrying the run id) and "done" (the last, carrying the exit code,
-// sent right before the server closes the stream - see the `finally` in
-// api_run's stream()). onerror below is therefore not the normal
-// end-of-run signal, it is what fires if the connection drops with no
-// "done" ever having arrived. That is also why endRun always closes `es`
-// itself: an EventSource whose stream the *server* ends still auto-reconnects
-// unless something on this side calls .close() first.
-function startRun(app, account, action) {
-  if (es) {
-    // With the fixes below (startSitting's synchronous re-entrancy guard,
-    // and Start Sitting plus every action button disabled for as long as
-    // any run - manual or sitting-driven - is live) every legitimate call
-    // site now waits for a previous run to end before starting another, so
-    // this should be unreachable. If it ever fires anyway, closing the old
-    // stream silently and reassigning `onRunEnd` would abandon whoever was
-    // still awaiting it, mid-run, with nothing to show for it - so this is
-    // surfaced loudly instead of let it happen quietly.
-    console.error('startRun called while a previous run was still live; '
-                 + 'closing it now. This should not be reachable.');
-    es.close();
-  }
-  $('console').textContent = '';
-  promptFrom = 0; stopping = false;
-  $('answer').value = ''; syncAnswerButton(); clearPrompt();
-  setStatus('run', `running ${action} — ${app} / ${account}`);
-  actionButtons().forEach(b => b.disabled = true);
-  // Disabled here too (not just inside startSitting) so a manual run alone
-  // - no sitting involved at all - also blocks Start Sitting from being
-  // clicked underneath it.
-  $('sit').disabled = true;
-  es = new EventSource(`/api/run?app=${encodeURIComponent(app)}&account=${encodeURIComponent(account)}&action=${action}`);
-  // Arrives before any output, so even a first-line prompt can be answered.
-  es.addEventListener('run', e => { RUN = e.data; $('reply').hidden = false; });
-  es.onmessage = e => { append(JSON.parse(e.data).t); watchForPrompt(); };
-  es.addEventListener('done', e => {
-    const code = e.data;
-    // A run you stopped yourself did not fail. Terminating it leaves a signal
-    // exit code behind, and reporting that as an error is just wrong. The
-    // code is what settles the race where a run finished on its own between
-    // the click and the request: a clean exit is "finished", not "stopped".
-    if (stopping && code !== '0') return endRun('', 'stopped');
-    endRun(code === '0' ? 'ok' : 'err', code === '0' ? 'finished' : `exited (code ${code})`);
-  });
-  es.onerror = () => { if (es) endRun('err', 'connection lost'); };
-  return new Promise(resolve => { onRunEnd = resolve; });
-}
-
-// -- the sitting: one account at a time, most perishable session first -----
-//
-// The scarce resource here is not CPU, it is a person's attention for
-// signing in. So this walks /api/due in the order it comes back (due.plan's
-// own ordering, most-perishable-session-first) and, for each account, asks
-// for a fresh sign-in and then awaits the FULL run - teardown included -
-// before ever asking about the next one. Two runs on one provider at once
-// would sign each other's session out from under the other; that is the one
-// outcome this whole feature exists to prevent.
-async function startSitting() {
-  // Re-entrancy guard - and it MUST be the very first statement, before any
-  // `await` in this function. A second click on Start Sitting calls this
-  // function again; JS runs synchronously up to the first await, so
-  // `sitting` is already true by the time that second call is dispatched
-  // (dispatched, at the earliest, once this call yields at the `await
-  // fetch` below). Putting this check anywhere later - after the fetch,
-  // after building the queue - leaves exactly that window open: a second
-  // invocation would reach confirm()/startRun() for the same account the
-  // first invocation is still running, and startRun's `if (es) es.close()`
-  // would silently tear down the first invocation's live run and steal its
-  // `onRunEnd`, leaving the first `await startRun(...)` never resolved.
-  if (sitting) return;
-  sitting = true;
-  $('sit').disabled = true;
-  try {
-    const res = await fetch('/api/due');
-    if (!res.ok) {
-      // A failed fetch (503: paperpull_core is not importable here) is not
-      // the same fact as "nobody is due" - it means the panel cannot tell,
-      // and must not be read as "stand down".
-      alert('Cannot read the due list here.');
-      return;
-    }
-    const {due} = await res.json();
-    // A provider with no declared session lifetime can wait for a plain
-    // cron job; only a perishable one needs a person sitting down for it.
-    const queue = due.filter(a => a.session_lifetime_minutes !== null);
-    if (!queue.length) { alert('Nothing needs a person right now.'); return; }
-    sittingAbort = false;
-    let completed = 0;
-    for (const a of queue) {
-      if (sittingAbort) break;
-      // Sign-in first: a perishable session has to be fresh when the pull
-      // runs, and only a person can make it fresh. Declining here - or
-      // pressing Stop once the run below has started - ends the whole
-      // sitting, not just this one account; `completed` below is what
-      // tells the difference between that and finishing the whole queue.
-      if (!confirm(`Sign in to ${a.app} (${a.account}) in the browser desktop, `
-                 + `in ONE tab. Press OK when you are signed in.`)) break;
-      if (sittingAbort) break;
-      // 'all', not 'resume'. Resume selects from the discovery.json this
-      // account already has on disk and never asks the provider what exists,
-      // so a sitting built on it spent the sign-in it had just asked a person
-      // for, printed "Nothing to resume", and called itself done. Run All
-      // discovers first, and every app's own "already downloaded" memory
-      // skips what is on disk - so this is discover-plus-new-only, which is
-      // what a sitting was always meant to be.
-      await startRun(a.app, a.account, 'all');
-      completed++;
-    }
-    // A sitting cut short - Cancel on a sign-in prompt, or Stop mid-run -
-    // is not "done": most of the point of this feature is telling a person
-    // what still needs them, and treating a half-finished sitting as
-    // complete would say the opposite of that.
-    if (completed === queue.length) {
-      alert('Sitting done.');
-    } else {
-      alert(`Sitting stopped after ${completed} of ${queue.length} `
-          + `account(s) - ${queue.length - completed} still need a person.`);
-    }
-  } finally {
-    sitting = false;
-    $('sit').disabled = false;
-  }
-}
-$('sit').onclick = startSitting;
-load();
-</script>
-</body>
-</html>
-"""
+@app.get("/panel.js")
+def panel_js():
+    return Response(_asset("panel.js"), media_type="text/javascript",
+                    headers=_NO_STORE)

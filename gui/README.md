@@ -1,10 +1,66 @@
 # PaperPull — Control panel (GUI)
 
-A small local web UI that wraps every downloader app: pick an app + account,
-click an action, and watch the live output. It only runs the same predefined
-commands the `.bat` files do — nothing from the page is passed to a shell.
+A small local web UI over every downloader app. It opens on the account that
+most needs you, says what it needs and why, and tells you which action to
+press. It only ever runs the same predefined commands the `.bat` files do —
+nothing from the page is passed to a shell.
 
-![PaperPull control panel — pick an app, click Pilot, watch the live output](../docs/control-panel.gif)
+![PaperPull control panel — the register on the left, one account and its next step on the right](../docs/control-panel.png)
+
+## What you are looking at
+
+**The register**, on the left, is every app/account pair you have, on one line
+each, grouped by what it needs and ordered so the first row is the one to open:
+
+| Group | Means |
+|---|---|
+| **Needs a sign-in** | The provider signed this session out. Nothing runs until someone signs in again. |
+| **Needs confirming** | No identity recorded yet. Runs refuse to file documents until you confirm which account this is. (Simyo and Youfone only — see below.) |
+| **Due** | Enough time has passed since the newest document that the next one is plausibly there. |
+| **Nothing to do** | Checked recently enough. |
+
+Providers you have never set up are **not** in that list. There are seventeen
+of them on a fresh checkout and most people will never use most of them, so
+listing each one as a thing wrong with your install was noise. **+ Add an
+account** at the foot of the register is where they live instead.
+
+**The bench**, on the right, is one account: its session, its identity, its
+newest document, when it was last looked at — and then **What now**, the
+ordinary path through a provider as numbered steps. Exactly one of them is
+ever highlighted, and only when there is a real next step to take. Anything
+that is not part of that path folds away under *Other things you can run*.
+
+**The console** sits underneath, a strip until something runs and most of the
+page while it does.
+
+**+ Add an account** creates one account's config file — the panel's only
+write. Two things go through it, and they are the same operation:
+
+- **a provider you have never set up.** Copies its tracked
+  `config.example.json` to `config.json`. Nothing is downloaded and nothing is
+  signed in to; the account appears in the register and you sign in from there.
+- **a second person's account of a provider you already use.** Copies *your*
+  config — including anything you changed in it — and then gives the new
+  account its own `output_dir`, its own `profile_dir` inside it, and (natively)
+  its own debugging port, so the two never share a download history or a
+  signed-in session. Two accounts sharing an `output_dir` share `progress.json`
+  and `sentinel.json`, so each would keep overwriting the other's record of
+  what it had downloaded. This is the same rule each app's own
+  `add_account.py` applies.
+
+  In the container the port is left alone: there is one browser and every
+  app's `cdp_url` points at it on purpose. A second person needs a second
+  `browser` service, and the panel says so when it creates the file.
+
+The label becomes a filename, so it is refused rather than rewritten: 1–32
+characters of lowercase `a-z`, `0-9`, `-` or `_`. An existing config is never
+overwritten.
+
+**Start a sitting** walks every account whose session is too perishable for
+the scheduler to catch alive, one at a time, most perishable first: it asks
+you to sign in, waits, runs, tears down, then asks about the next one. The
+queue is on screen the whole time, so you can see what you are in for before
+you start and where you are while it runs.
 
 ## Run it
 
@@ -17,24 +73,6 @@ That creates a small venv (FastAPI + uvicorn), starts the server, and opens
 
 Needs **Python 3.11+**, the same floor as the rest of PaperPull.
 
-Closing the browser tab stops the run it was showing. That is deliberate: a
-downloader driving your signed-in browser should not keep going once nothing
-is watching it. Nothing is lost — a document is only marked done after it is
-saved, so the next run picks up exactly where this one stopped.
-
-A run can stop and ask you something — a provider signed you out mid-run, a
-provider wants you to prove you are human, or the `--verify` pass is offering
-to relabel a receipt. The question appears under the console, with a box to
-answer it and a **Continue** button for the ones that just want a keypress.
-Fix whatever it asked about in the browser first; nothing is lost while it
-waits, and **Stop run** ends a run you would rather not finish.
-
-What the panel gives a run is a pipe, not a terminal, and one thing follows
-from that. An app asks for the account holder's name on its first run only on
-a real console, so here it does not ask at all: the index CSV's **Account
-Holder** column stays blank until you set it by running the app once from a
-terminal, or by putting `"owner"` in its `config.json`.
-
 Or manually:
 
 ```bat
@@ -42,27 +80,60 @@ python -m venv .venv && .venv\Scripts\activate && pip install -r requirements.tx
 python -m uvicorn app:app --port 8765
 ```
 
+## The actions
+
+| Step | Button | What it runs |
+|---|---|---|
+| 1 | **Sign in** | Opens that app's browser (Chromium, or Edge/Chrome for bot-protected sites) — **you** sign in and leave it open |
+| 2 | **Confirm this account** | Records which account the signed-in tab belongs to. Simyo and Youfone only; once per account |
+| 3 | **Try a few** | Downloads the newest handful, as a test |
+| 4 | **Download everything new** | Downloads everything you do not already have (`--yes`, no prompt) |
+| — | **List what is there** | Enumerates available documents; downloads nothing |
+| — | **Continue last run** | Picks an interrupted run up where it stopped |
+| — | **Re-check saved files** | Re-reads the PDFs already on disk; opens no browser |
+
+Only the actions an app's own entry script accepts are offered — `--adopt-identity`
+exists on two of the eighteen, and the panel reads each script to find out
+rather than keeping a second list that could drift.
+
+## Notes & limits
+
+- **Signing in is yours.** The panel opens the browser; you handle sign-in and
+  2FA. That's by design — the tools never touch your password.
+- **Closing the browser tab stops the run it was showing.** Deliberate: a
+  downloader driving your signed-in browser should not keep going once nothing
+  is watching it. Nothing is lost — a document is only marked done after it is
+  saved, so the next run picks up exactly where this one stopped.
+- **A run can stop and ask you something** — a provider signed you out, a
+  provider wants you to prove you are human, or the re-check pass is offering
+  to relabel a receipt. The question appears under the console, with a box to
+  answer it and **Continue** for the ones that just want a keypress. Fix
+  whatever it asked about in the browser first; nothing is lost while it waits,
+  and **Stop this run** ends one you would rather not finish.
+- **Safe to re-run.** Download everything new and Continue last run skip any
+  statement or receipt you already have — nothing is ever fetched twice, even
+  if you deleted the PDFs after importing them elsewhere.
+- **The account holder stays unset.** What the panel gives a run is a pipe, not
+  a terminal, and one thing follows from that: an app asks for the account
+  holder's name on its first run only on a real console, so here it does not
+  ask at all. The index CSV's **Account Holder** column stays blank until you
+  set it by running the app once from a terminal, or by putting `"owner"` in
+  its `config.json`.
+- **A missing `.venv`** is called out on the account it affects; run that app's
+  `setup.bat` once.
+
 ## In Docker
 
 The panel is the web UI of the container stack — see
-[docs/docker.md](../docs/docker.md). Two environment variables change how it
-behaves there, and both default to the native behaviour above:
+[docs/docker.md](../docs/docker.md). Four environment variables change how it
+behaves there, and all default to the native behaviour above:
 
 | Variable | Effect |
 |---|---|
 | `PAPERPULL_ALLOWED_HOSTS` | Extra hostnames the page may be served from, comma-separated. Behind a reverse proxy this is required: without it every request from your panel's hostname is refused as cross-origin. Exact matches; localhost is always allowed. |
-| `PAPERPULL_REMOTE_BROWSER` | The sign-in browser is in another container. **Login** then means "attach and report whether I'm signed in" (`--login`) rather than "open a window" (`--open-browser`) — there is no display here to open one on. Also stops the panel warning about missing per-app `.venv`s, since the image runs every app on one interpreter. |
-| `PAPERPULL_BROWSER_URL` | Public URL of the browser desktop. Adds an "Open browser desktop" link to the panel. Cosmetic. |
+| `PAPERPULL_REMOTE_BROWSER` | The sign-in browser is in another container. **Sign in** then means "attach and report whether I'm signed in" (`--login`) rather than "open a window" (`--open-browser`) — there is no display here to open one on, and the button's own description says so. Also stops the panel warning about missing per-app `.venv`s, since the image runs every app on one interpreter. |
+| `PAPERPULL_BROWSER_URL` | Public URL of the browser desktop. Adds a link to it in the masthead, next to a prompt that needs it, and inside a sitting. |
 | `PAPERPULL_CONFIG_ROOT` | Read each app's `config*.json` from `<root>/<app>/` instead of the app's own folder, and pass it as an absolute `--config`. In the image the app folders are part of the image, so a config kept there would not survive a rebuild — and not writing into them is what lets the container run as any uid. Accounts are read per request, so a new `config.<name>.json` appears without a restart. |
-
-## Tests
-
-```bash
-python -m pytest tests -q
-```
-
-`tests/test_remote_browser.py` covers both switches, in both directions — it
-fails if the Docker behaviour breaks *or* if native behaviour changes.
 
 ## Which apps does it drive?
 
@@ -79,24 +150,45 @@ It finds any subfolder containing an entry script (`*_receipts.py` /
 `*_docs.py`), so it works with either the `apps/<slug>` layout or the original
 `Provider Name/` folders. Each app runs with its own `.venv` if present.
 
-## Actions
+## How it is put together
 
-| Button | What it runs |
-|--------|--------------|
-| **Login** | Opens that app's browser (Chromium, or Edge/Chrome for bot-protected sites) — **you** sign in and leave it open |
-| **Discover** | Enumerate available documents (downloads nothing) |
-| **Pilot** | Download the newest few as a test |
-| **Run All** | Download everything available (`--yes`, no prompt) |
-| **Resume** | Continue an interrupted run |
-| **Verify** | Re-check the downloaded PDFs |
+`app.py` is the backend and nothing else. The page is three files in
+`static/` — `index.html`, `panel.css`, `panel.js` — served with `no-store`,
+and read per request, so editing the page is a reload rather than a restart.
 
-## Notes & limits
+The page draws itself from **one** request, `GET /api/state`: the flat account
+list, already bucketed and ordered, plus every action's label and the sentence
+that explains it. Both the bucketing and the wording of the actions live in
+`app.py` on purpose — they are rules about this domain, they have to be the
+same for the register and the bench beside it, and there they are testable in
+Python rather than in a browser.
 
-- **Login is human-driven.** The panel opens the browser; you handle sign-in and
-  2FA yourself. That's by design — the tools never touch your password.
-- If a run hits a mid-run "please sign in again" prompt (e.g. an expired
-  session), it pauses and shows you the question. Sign in in the browser, then
-  press **Continue** — the run carries on from where it paused. (Resume after a
-  fresh Login works too, and skips nothing you already have.)
-- One app needs its `.venv` set up (run its `setup.bat` once) before the panel
-  can run it; the UI warns when a venv is missing.
+Everything in `panel.js` that decides what a person is *told* is a pure
+function near the top of the file (`sessionText`, `identityText`, `rowNote`,
+`pathFor`, `nextStep`). `tests/test_identity_display.py` executes those
+functions directly under Node.
+
+| Route | For |
+|---|---|
+| `GET /api/state` | everything the page draws itself from |
+| `POST /api/accounts` | create one account's config — the only route that writes |
+| `GET /api/apps` | the older app list, unchanged in shape |
+| `GET /api/due` | who is due, most perishable first — the same answer `tools/due.py` prints |
+| `GET /api/run` | start one action; server-sent events carry its output |
+| `POST /api/answer` | one line to a run blocked on `input()` |
+| `POST /api/stop` | end a run |
+
+## Tests
+
+```bash
+python -m pytest tests -q
+```
+
+`tests/test_remote_browser.py` covers both Docker switches, in both directions
+— it fails if the Docker behaviour breaks *or* if native behaviour changes.
+`tests/test_state.py` covers the buckets, the ordering, and the rule that no
+action may ship as a bare verb with no sentence explaining it.
+`tests/test_add_account.py` covers the one writing route: what it refuses (an
+app that is not there, a label that would not be a safe filename, an account
+that already exists) and what it writes (a second account's own folder,
+profile and port).

@@ -1,31 +1,31 @@
-"""The identity warning must not lie to the 16 apps that have no gate.
+"""What the panel tells you about identity must not lie to the sixteen apps
+that have no identity gate.
 
-Finding 1 from code review: before this fix, `showIdentity()`'s "No identity
-recorded... press Adopt identity" warning and `accountLabel`'s "· unidentified"
-suffix were shown for EVERY app whenever `identified` is false - which, for
-every app except Simyo and Youfone, is *always*, because nothing ever calls
-`ensure_identity` for them. Hiding the Adopt identity button (the fix in
-gui/app.py's `_supported_actions` / `updateActionButtons`) made this WORSE,
-not neutral: the button that the warning tells you to press no longer
-exists, for the same 16 apps the warning still nags at.
+The original defect: the panel's "No identity recorded... press Adopt
+identity" warning and its "· unidentified" account suffix were shown for
+EVERY app whenever `identified` was false - which, for every app except Simyo
+and Youfone, is *always*, because nothing ever calls `ensure_identity` for
+them. Hiding the button (gui/app.py's `_supported_actions`) made that worse
+rather than neutral: the button the warning told you to press no longer
+existed, for the same sixteen apps the warning still nagged at.
 
-The fix is `identityGated(m)` - true only when `m.supported_actions`
-includes "adopt" - gating both false claims. This is client-side JS with no
-existing browser-test harness in this suite (see gui/tests' other
-`panel.HTML` checks, which are plain substring assertions). Rather than write
-an assertion that cannot actually fail if the logic were deleted, this file
-extracts the REAL function bodies out of `panel.HTML` by name and executes
-them under Node (present in this environment - `node --version` succeeds),
-with a minimal DOM/`$`/`META` stub. That is "reaching" the fix: if a future
-edit renames or deletes `identityGated`, `onApp`, or `showIdentity`, or
-changes what they do, the extraction or the assertions below fail - a hand-
-copied duplicate of the JS would not catch either kind of drift.
+Two things carry the fix now, and this file reaches both:
 
-What this file does NOT do: render the page in a real browser (no Playwright
-browser context is wired into this suite) or click through the actual
-`<select>`/button elements. That gap is real; the extraction-and-eval
-approach below is the closest reach available without adding a browser
-dependency to a panel that has never needed one.
+  server side  `_needs()` decides which bucket an account is in, and only
+               puts one in "confirm" when the app is actually gated. The
+               page draws whatever that says, so a wrong answer here would
+               reach the screen no matter what the JS does.
+
+  page side    `identityText()` and `rowNote()` are pure functions - account
+               row in, words out - so they can be executed directly under
+               Node with no DOM at all. The previous version of this file
+               had to extract DOM-coupled handlers and stub out `$`,
+               `Option` and `META` to reach the same wording; the functions
+               being pure is why that scaffolding is gone.
+
+What this file does NOT do: render the page in a real browser or click the
+real elements. That gap is unchanged, and is why the wording lives in pure
+functions in the first place.
 """
 from __future__ import annotations
 
@@ -44,148 +44,145 @@ import app as panel  # noqa: E402
 NODE = shutil.which("node")
 
 
-def _extract_function(html: str, name: str) -> str:
-    """The literal source of `function <name>(...) { ... }` inside panel.HTML.
+def _extract_function(source: str, name: str) -> str:
+    """The literal source of `function <name>(...) { ... }` inside panel.JS.
 
-    Brace-balanced, not a one-line regex: onApp() and showIdentity() both
-    contain nested `{}` (object literals, arrow functions, if-blocks), so a
-    naive "up to the first closing brace" match would truncate them.
-    Raises if the function cannot be found, rather than silently running an
-    empty stub - a rename in gui/app.py must fail this test, not pass it
-    vacuously.
+    Brace-balanced, not a one-line regex: these functions contain nested `{}`
+    (object literals, arrow functions, if-blocks), so a naive "up to the first
+    closing brace" match would truncate them. Raises if the function cannot be
+    found, rather than silently running an empty stub - a rename in panel.js
+    must fail this test, not pass it vacuously.
     """
     marker = f"function {name}("
-    start = html.index(marker)  # raises ValueError if absent - intentional
-    brace_start = html.index("{", start)
+    start = source.index(marker)  # raises ValueError if absent - intentional
+    brace_start = source.index("{", start)
     depth = 0
     i = brace_start
-    while i < len(html):
-        if html[i] == "{":
+    while i < len(source):
+        if source[i] == "{":
             depth += 1
-        elif html[i] == "}":
+        elif source[i] == "}":
             depth -= 1
             if depth == 0:
-                return html[start:i + 1]
+                return source[start:i + 1]
         i += 1
     raise AssertionError(f"unbalanced braces extracting {name}()")
 
 
-# The DOM/global stubs every extracted function needs. `actionButtons` is
-# deliberately a no-op stub (not the real querySelectorAll-based one, which
-# needs a real DOM) - button visibility is already covered by
-# test_action_gating.py against the real `supported_actions` data; this file
-# is only about the identity text and label, which don't depend on it.
-_HARNESS_PRELUDE = """
-const _store = {};
-function $(id) {
-  if (!(id in _store)) _store[id] = {};
-  return _store[id];
-}
-class Option { constructor(text, value) { this.text = text; this.value = value; } }
-function actionButtons() { return []; }
-"""
+def _call(fn: str, *args, needs: list = ("identityText",)):
+    """Run one of the page's own pure functions on one account row.
 
-
-def _run(app_meta: dict, accounts: list, selected_account: str) -> dict:
-    """Run the real onApp() + showIdentity() extracted from panel.HTML,
-    against one fake app/account list, and report what a user would see:
-    every account's <option> label, and the identity paragraph's text."""
+    `needs` names every function that has to be present for `fn` to run -
+    nextStep leans on pathFor, so both are extracted.
+    """
     if NODE is None:
         pytest.skip("node is not available in this environment")
-
-    meta = {"root_app": {**app_meta, "accounts": accounts}}
-    script = "\n".join([
-        _HARNESS_PRELUDE,
-        f"let META = {json.dumps({'apps': meta})};",
-        "_store['app'] = { value: 'root_app' };",
-        f"_store['account'] = {{ value: {json.dumps(selected_account)}, "
-        "innerHTML: '', appended: [], append(opt) { this.appended.push(opt); } };",
-        "_store['identity'] = { textContent: '' };",
-        "_store['venvwarn'] = { style: {}, textContent: '' };",
-        "_store['actions'] = { innerHTML: '' };",
-        _extract_function(panel.HTML, "identityGated"),
-        _extract_function(panel.HTML, "updateActionButtons"),
-        _extract_function(panel.HTML, "onApp"),
-        _extract_function(panel.HTML, "showIdentity"),
-        "onApp();",
-        "console.log(JSON.stringify({"
-        "  labels: _store['account'].appended.map(o => o.text),"
-        "  identityText: _store['identity'].textContent"
-        "}));",
-    ])
-    result = subprocess.run([NODE, "-e", script], capture_output=True, text=True,
-                            timeout=15)
-    assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout.strip().splitlines()[-1])
+    bodies = "\n".join(_extract_function(panel.JS, n) for n in needs)
+    script = (bodies + "\nconsole.log(JSON.stringify("
+              + fn + "(" + ", ".join(json.dumps(a) for a in args) + ")));")
+    out = subprocess.run([NODE, "-e", script], capture_output=True, text=True,
+                         timeout=15)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def _account(name="primary", identified=False, state="", anchors=None):
-    return {"name": name, "state": state, "last_alive": "",
-            "parked_reason": "", "identified": identified,
-            "anchors": anchors or []}
+def _account(name="primary", gated=False, identified=False, needs="ok",
+             state="", anchors=None, **extra):
+    row = {"app": "provider", "account": name, "needs": needs, "state": state,
+           "last_alive": "", "parked_reason": "", "identity_gated": gated,
+           "identified": identified, "anchors": anchors or [],
+           "session_lifetime_minutes": None, "newest_document_date": "",
+           "last_checked_date": "",
+           "supported_actions": ["login", "pilot", "all", "discover",
+                                 "resume", "verify"],
+           "has_venv": True}
+    row.update(extra)
+    return row
 
 
-# -- an app WITHOUT the identity gate (16 of 18, e.g. amex) -----------------
+# -- an app WITHOUT the identity gate (sixteen of eighteen, e.g. amex) -------
 
 
-def test_an_ungated_apps_account_label_carries_no_unidentified_suffix():
-    """Before the fix this said "primary · unidentified" for every account of
-    every one of these 16 apps, permanently - `identified` is always false
-    there because nothing ever calls ensure_identity."""
-    out = _run({"supported_actions": ["login", "discover", "pilot", "all",
-                                      "resume", "verify"]},
-              [_account(identified=False)], "primary")
-    assert out["labels"] == ["primary"]
+def test_an_ungated_app_is_never_told_to_confirm_anything():
+    """The dead end, on the server side: an account of an app with no gate
+    must not land in the bucket whose whole text is "go and confirm it"."""
+    assert panel._needs(
+        {"configured": True, "state": "", "identified": False},
+        gated=False, due=False) == "ok"
 
 
-def test_an_ungated_apps_identity_text_is_silent_not_a_dead_end():
+def test_an_ungated_apps_identity_line_does_not_send_you_hunting():
     """Before the fix this told the user to press a button that does not
-    exist for this app - the dead end code review flagged."""
-    out = _run({"supported_actions": ["login", "discover", "pilot", "all",
-                                      "resume", "verify"]},
-              [_account(identified=False)], "primary")
-    assert out["identityText"] == ""
-    assert "Adopt identity" not in out["identityText"]
+    exist for this app."""
+    out = _call("identityText", _account(gated=False))
+    assert "confirm" not in out["text"].lower()
+    assert out["gone"] is False
+
+
+def test_an_ungated_apps_register_line_says_nothing_alarming():
+    out = _call("rowNote", _account(gated=False, needs="ok"),
+                needs=["rowNote"])
+    assert "confirm" not in out["text"].lower()
+    assert "unidentified" not in out["text"].lower()
 
 
 def test_an_ungated_app_still_shows_anchors_if_it_somehow_has_any():
     """The guard falls through to the SAME anchors branch a gated app uses -
-    it does not blanket-suppress the identity paragraph, only the false
-    "you must adopt" claim. If an ungated app's sentinel ever carried
-    anchors (it shouldn't today, but nothing enforces that), they would
-    still be shown."""
-    out = _run({"supported_actions": ["login"]},
-              [_account(identified=True,
-                        anchors=[{"id": "123", "date": "2026-01-01"}])],
-              "primary")
-    assert "123" in out["identityText"]
+    it does not blanket-suppress the identity line, only the false "you must
+    confirm" claim. If an ungated app's sentinel ever carried anchors (it
+    should not today, but nothing enforces that), they would still be shown.
+    """
+    out = _call("identityText",
+                _account(gated=False, identified=True,
+                         anchors=[{"id": "123", "date": "2026-01-01"}]))
+    assert "123" in out["text"]
+
+
+def test_an_ungated_app_is_never_pointed_at_a_button_it_does_not_have():
+    """nextStep is what fills the one highlighted button on the bench, so it
+    is the other place a person could be sent to a non-existent action."""
+    out = _call("nextStep", _account(gated=False, needs="due", state="warm"),
+                needs=["pathFor", "nextStep"])
+    assert out != "adopt"
 
 
 # -- an app WITH the identity gate (Simyo, Youfone) --------------------------
 
 
-def test_a_gated_apps_unidentified_account_still_gets_the_real_warning():
-    """Negative control: the guard must not silence the warning where it is
-    still true and actionable - Simyo/Youfone's own Adopt identity button
-    really is there to press."""
-    out = _run({"supported_actions": ["login", "discover", "adopt"]},
-              [_account(identified=False)], "primary")
-    assert out["labels"] == ["primary · unidentified"]
-    assert "Adopt identity" in out["identityText"]
+def test_a_gated_apps_unconfirmed_account_is_bucketed_as_needing_confirming():
+    """Negative control on the server side: the guard must not silence the
+    real case."""
+    assert panel._needs(
+        {"configured": True, "state": "", "identified": False},
+        gated=True, due=False) == "confirm"
 
 
-def test_a_gated_apps_parked_account_still_shows_parked_not_unidentified():
-    """identified=True (already adopted) with state=parked must show the
-    session state, not be masked by the identity guard."""
-    out = _run({"supported_actions": ["login", "discover", "adopt"]},
-              [_account(identified=True, state="parked")], "primary")
-    assert out["labels"] == ["primary · needs sign-in"]
+def test_a_gated_apps_unconfirmed_account_gets_the_real_instruction():
+    out = _call("identityText", _account(gated=True))
+    assert "confirm it once" in out["text"]
+    assert out["gone"] is True
 
 
-def test_a_gated_apps_identified_account_shows_its_anchors():
-    out = _run({"supported_actions": ["login", "discover", "adopt"]},
-              [_account(identified=True,
-                        anchors=[{"id": "555", "date": "2026-08-14"}])],
-              "primary")
-    assert "555" in out["identityText"]
-    assert "2026-08-14" in out["identityText"]
+def test_a_gated_apps_parked_account_is_told_to_sign_in_not_to_confirm():
+    """Parked outranks unconfirmed, because confirming needs a signed-in tab
+    to confirm against - so an account that is both must be sent to the
+    sign-in first."""
+    assert panel._needs(
+        {"configured": True, "state": "parked", "identified": False},
+        gated=True, due=False) == "signin"
+
+
+def test_a_gated_apps_confirmed_account_shows_its_anchors():
+    out = _call("identityText",
+                _account(gated=True, identified=True,
+                         anchors=[{"id": "555", "date": "2026-08-14"}]))
+    assert "555" in out["text"]
+    assert "2026-08-14" in out["text"]
+
+
+def test_the_bench_points_a_gated_signed_in_account_at_confirming():
+    """The positive control for nextStep: Simyo's own Confirm button really
+    is the thing to press, and it is the one that gets highlighted."""
+    row = _account(gated=True, state="warm", needs="due",
+                   supported_actions=["login", "adopt", "pilot", "all"])
+    assert _call("nextStep", row, needs=["pathFor", "nextStep"]) == "adopt"

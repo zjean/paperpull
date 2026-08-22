@@ -1,8 +1,8 @@
 """What the sitting actually runs.
 
-The command surface is data (`ACTIONS`) and the page is a string, so both are
-readable from here - which matters, because this defect was invisible in any
-single file's diff. The sitting ran `resume`, an action that selects from the
+The command surface is data (`ACTIONS`) and the page's script is a file
+(`panel.JS`), so both are readable from here - which matters, because this
+defect was invisible in any single file's diff. The sitting ran `resume`, an action that selects from the
 `discovery.json` an account already has and never asks the provider what
 exists. So a sitting spent a person's sign-in, printed "Nothing to resume",
 and reported "Sitting done."
@@ -32,7 +32,7 @@ def _sitting_action() -> str:
     the string could not have caught it.
     """
     match = re.search(r"await startRun\(a\.app, a\.account, '([a-z]+)'\)",
-                      panel.HTML)
+                      panel.JS)
     assert match, "the sitting no longer starts a run the way this test reads"
     return match.group(1)
 

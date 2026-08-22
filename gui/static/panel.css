@@ -1,0 +1,795 @@
+/* PaperPull control panel.
+ *
+ * The look is a night ledger: a cool ink ground, warm paper-coloured type, and
+ * hairline rules. Two deliberate choices hold it together.
+ *
+ * One - the machine's own monospace is the display face, not just the console
+ * face. This panel is a front end for seventeen command-line tools and it
+ * should read like one, and a local tool that drives signed-in financial
+ * accounts must not fetch a webfont from anyone. Prose (the sentence under a
+ * button, saying what it does) is set in the system sans; everything
+ * structural is mono.
+ *
+ * Two - colour means state, and nothing else. The primary button is
+ * paper-coloured; vermilion, brass and green are reserved for "sign in",
+ * "due" and "filed". The old panel had two blue primaries side by side -
+ * "Run All" and "Start sitting" - which said they were equally important and
+ * equally unrelated, so blue had stopped meaning anything.
+ */
+
+:root {
+  --ink:        #0a0d12;
+  --ink-2:      #10141b;
+  --ink-3:      #161b24;
+  --vellum:     #ede6d6;
+  --vellum-dim: #a9a492;
+  --slate:      #6e7787;
+  --rule:       #1d2430;
+  --rule-lit:   #2b3546;
+
+  --stamp:  #e0563a;  /* needs a sign-in */
+  --brass:  #cb9a45;  /* due */
+  --filed:  #56a583;  /* nothing to do */
+  --focus:  #7fa8d9;
+
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Consolas,
+          "Liberation Mono", Menlo, monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", sans-serif;
+
+  --rail: 336px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+/* `hidden` has to win over the display rules below - .bench-empty is a grid,
+ * .more is a block, and an attribute selector alone loses to a class. */
+[hidden] { display: none !important; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  background: var(--ink);
+  color: var(--vellum);
+  font: 13px/1.5 var(--mono);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2 { margin: 0; font-weight: 600; }
+
+button, input { font: inherit; color: inherit; }
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------ masthead
+ * The tally is the headline. Not the version, not the apps root - how many
+ * accounts need you, which is the question this page exists to answer. */
+
+.masthead {
+  display: flex;
+  align-items: baseline;
+  gap: 20px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--ink-2);
+}
+
+.wordmark { display: flex; align-items: baseline; gap: 8px; flex: none; }
+
+.wordmark-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.wordmark-ver { color: var(--slate); font-size: 11px; }
+
+.tally {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--vellum-dim);
+}
+
+.tally b { color: var(--vellum); font-weight: 600; }
+.tally .n-signin { color: var(--stamp); font-weight: 600; }
+.tally .n-due    { color: var(--brass); font-weight: 600; }
+
+.masthead-side {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--slate);
+}
+
+.root { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.link-out {
+  color: var(--focus);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.link-out:hover { border-bottom-color: currentColor; }
+
+/* ------------------------------------------------------------------- notices
+ * A notice is a fact about this whole install, not about one account: no apps
+ * found, or the core is missing so nothing can be called due. Empty by
+ * default and it takes up no room. */
+
+.notices:empty { display: none; }
+
+.notice {
+  padding: 10px 22px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--ink-3);
+  font-size: 12px;
+  color: var(--vellum-dim);
+}
+
+.notice b { color: var(--vellum); }
+.notice-warn { box-shadow: inset 3px 0 0 var(--brass); }
+
+/* ---------------------------------------------------------------------- main */
+
+main {
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  min-height: 0;
+}
+
+/* --------------------------------------------------------------- the register
+ * One line per account, grouped by what it needs. The left edge of each line
+ * carries its state as a colour, so the shape of the list tells you where the
+ * work is before you read a word of it. */
+
+.register {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--rule);
+  background: var(--ink-2);
+}
+
+.register-head { padding: 12px 16px; border-bottom: 1px solid var(--rule); }
+
+.field { display: block; }
+
+.field-label {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--slate);
+  margin-bottom: 6px;
+}
+
+.register-head input {
+  width: 100%;
+  padding: 7px 9px;
+  background: var(--ink);
+  border: 1px solid var(--rule-lit);
+  border-radius: 3px;
+  color: var(--vellum);
+}
+
+.register-head input::placeholder { color: var(--slate); }
+
+.register-list { flex: 1 1 auto; min-height: 0; overflow: auto; }
+
+.group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 16px 16px 6px;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--slate);
+}
+
+.group-head::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--rule);
+}
+
+.group-count { color: var(--vellum-dim); letter-spacing: 0.06em; }
+
+.row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 16px 9px 13px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  border-left: 3px solid transparent;
+  cursor: pointer;
+}
+
+.row:hover { background: var(--ink-3); }
+.row[aria-selected="true"] { background: var(--ink-3); box-shadow: inset -2px 0 0 var(--vellum); }
+.row[aria-selected="true"] .row-provider { color: #fff9ea; }
+
+.row-signin { border-left-color: var(--stamp); }
+.row-due    { border-left-color: var(--brass); }
+.row-confirm{ border-left-color: var(--stamp); }
+.row-setup  { border-left-color: var(--rule-lit); }
+.row-ok     { border-left-color: var(--rule-lit); }
+
+.row-top { display: flex; align-items: baseline; gap: 8px; }
+
+.row-provider {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+
+.row-account { color: var(--slate); font-size: 11px; flex: 1; min-width: 0;
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.row-note { margin-top: 3px; font-size: 11px; color: var(--vellum-dim); }
+.row-note-signin { color: var(--stamp); }
+.row-note-confirm { color: var(--stamp); }
+
+.row-life { color: var(--slate); font-size: 10px; flex: none; }
+
+.register-foot { flex: none; padding: 12px 16px; border-top: 1px solid var(--rule); }
+
+/* Both rail buttons share this. Neither is ever paper-filled: paper means
+ * "the one thing to press" and that belongs to the bench. */
+.rail-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--rule-lit);
+  border-radius: 3px;
+  background: var(--ink-3);
+  cursor: pointer;
+}
+
+.rail-btn:hover { border-color: var(--vellum-dim); }
+
+.rail-btn-label {
+  display: block;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.rail-btn-sub {
+  display: block;
+  margin-top: 4px;
+  font: 11px/1.45 var(--sans);
+  color: var(--vellum-dim);
+}
+
+.rail-btn-sub:empty { display: none; }
+
+/* The sitting button. Paper-filled when there is someone to sit with, quiet
+ * and unpressable when there is not - the old panel offered a big blue button
+ * that, most days, opened an alert saying "nothing needs a person". */
+.sitting-start {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--rule-lit);
+  border-radius: 3px;
+  background: var(--ink-3);
+  cursor: pointer;
+}
+
+.sitting-start-label {
+  display: block;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.sitting-start-sub {
+  display: block;
+  margin-top: 4px;
+  font: 11px/1.45 var(--sans);
+  color: var(--vellum-dim);
+}
+
+.sitting-start.ready { border-color: var(--brass); box-shadow: inset 3px 0 0 var(--brass); }
+.sitting-start.ready .sitting-start-label { color: var(--brass); }
+.sitting-start:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* --------------------------------------------------------------- the bench */
+
+.bench { display: flex; flex-direction: column; min-height: 0; }
+
+.detail { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 20px 24px 24px; }
+
+.detail-head { display: flex; align-items: center; gap: 14px; }
+
+.detail-title {
+  font-size: 19px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.detail-slash { color: var(--rule-lit); font-weight: 400; }
+.detail-account { color: var(--vellum-dim); font-size: 15px; letter-spacing: 0.04em; }
+
+/* The stamp: what this account needs, in one word, set like something pressed
+ * onto a page rather than a coloured pill. */
+.stamp {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.stamp-signin, .stamp-confirm { color: var(--stamp); }
+.stamp-due { color: var(--brass); }
+.stamp-setup { color: var(--slate); }
+.stamp-ok  { color: var(--filed); }
+
+.detail-why {
+  margin: 10px 0 0;
+  max-width: 62ch;
+  font: 13px/1.6 var(--sans);
+  color: var(--vellum-dim);
+}
+
+/* -------------------------------------------------------------------- facts */
+
+.facts {
+  margin: 20px 0 0;
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.fact {
+  display: grid;
+  grid-template-columns: 15ch minmax(0, 1fr);
+  gap: 14px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.fact dt {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--slate);
+}
+
+.fact dd { margin: 0; font-size: 12px; color: var(--vellum-dim); min-width: 0;
+           max-width: 76ch; }
+.fact dd b { color: var(--vellum); font-weight: 600; }
+.fact .gone { color: var(--stamp); }
+.fact .anchor { color: var(--vellum); }
+
+/* The session meter. The one graphic on the page, and the only thing here
+ * that moves on its own: a provider that signs you out after ten minutes is
+ * why the sitting exists at all, and a timestamp alone does not make that
+ * felt. Hidden entirely for a provider that declares no lifetime - there is
+ * nothing to draw, and a full bar would claim something untrue. */
+.meter {
+  display: block;
+  width: 190px;
+  height: 4px;
+  margin-bottom: 6px;
+  background: var(--rule);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.meter-fill { display: block; height: 100%; background: var(--filed); }
+.meter-fill.low { background: var(--brass); }
+.meter-fill.gone { background: var(--stamp); }
+
+.warn {
+  margin: 16px 0 0;
+  padding: 9px 12px;
+  box-shadow: inset 3px 0 0 var(--brass);
+  background: var(--ink-2);
+  font: 12px/1.5 var(--sans);
+  color: var(--vellum-dim);
+}
+
+/* ----------------------------------------------------------------- what now
+ * Three numbered steps, because these three genuinely are a sequence: you
+ * sign in, you try a few, then you take the lot. The number is information,
+ * not decoration. Everything else folds away under "Other things you can
+ * run" - the old panel put all six side by side, identically styled, so
+ * nothing on screen said which one to press first. */
+
+.bench-heading {
+  margin: 24px 0 10px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--slate);
+}
+
+.path { display: grid; gap: 8px; }
+
+.step {
+  display: grid;
+  grid-template-columns: 2.4em minmax(0, 1fr);
+  gap: 2px 12px;
+  text-align: left;
+  padding: 12px 14px;
+  background: var(--ink-2);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.step:hover { border-color: var(--rule-lit); background: var(--ink-3); }
+
+.step-n {
+  grid-row: 1 / 3;
+  align-self: start;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--rule-lit);
+  line-height: 1;
+}
+
+.step-label { font-weight: 600; letter-spacing: 0.03em; }
+
+.step-blurb {
+  font: 12px/1.5 var(--sans);
+  color: var(--vellum-dim);
+  max-width: 64ch;
+}
+
+/* The recommended next step, and the only paper-filled thing on the bench. */
+.step.next {
+  background: var(--vellum);
+  border-color: var(--vellum);
+  color: var(--ink);
+}
+.step.next .step-n { color: rgba(10, 13, 18, 0.35); }
+.step.next .step-blurb { color: #4a4535; }
+.step.next::after {
+  content: "start here";
+  grid-column: 2;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(10, 13, 18, 0.5);
+  margin-top: 6px;
+}
+
+.step:disabled { opacity: 0.4; cursor: not-allowed; }
+.step:disabled:hover { border-color: var(--rule); background: var(--ink-2); }
+
+.more { margin-top: 16px; }
+
+.more summary {
+  cursor: pointer;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--slate);
+  padding: 6px 0;
+}
+
+.more summary:hover { color: var(--vellum-dim); }
+.more[hidden] { display: none; }
+
+.more-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.side {
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--ink-2);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.side:hover { border-color: var(--rule-lit); background: var(--ink-3); }
+.side:disabled { opacity: 0.4; cursor: not-allowed; }
+.side-label { display: block; font-weight: 600; letter-spacing: 0.03em; }
+.side-blurb { display: block; margin-top: 3px; font: 11px/1.45 var(--sans); color: var(--vellum-dim); }
+
+.bench-empty {
+  flex: 1 1 auto;
+  margin: 0;
+  display: grid;
+  place-content: center;
+  color: var(--slate);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+/* -------------------------------------------------------------------- adder */
+
+.adder {
+  flex: none;
+  padding: 16px 24px 18px;
+  border-bottom: 1px solid var(--rule-lit);
+  background: var(--ink-2);
+}
+
+.adder-head { display: flex; align-items: center; gap: 12px; }
+
+.adder-head h2 {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  flex: 1;
+}
+
+.adder-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.adder-row .field { flex: 1 1 200px; min-width: 160px; }
+
+.adder select, .adder input {
+  width: 100%;
+  padding: 7px 9px;
+  background: var(--ink);
+  border: 1px solid var(--rule-lit);
+  border-radius: 3px;
+  color: var(--vellum);
+}
+
+.adder input::placeholder { color: var(--slate); }
+
+.adder-note {
+  margin: 12px 0 0;
+  max-width: 78ch;
+  font: 12px/1.55 var(--sans);
+  color: var(--vellum-dim);
+}
+
+.adder-note code {
+  font: 11px/1.5 var(--mono);
+  color: var(--vellum);
+  word-break: break-all;
+}
+
+.adder-note.bad { color: var(--stamp); }
+.adder-note:empty { display: none; }
+
+/* ------------------------------------------------------------------ sitting */
+
+.sitting {
+  flex: none;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--rule-lit);
+  background: var(--ink-2);
+}
+
+.sitting-head { display: flex; align-items: center; gap: 12px; }
+
+.sitting-head h2 {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  flex: 1;
+}
+
+.sitting-count { color: var(--slate); letter-spacing: 0.06em; }
+
+.sitting-queue {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sitting-queue li {
+  padding: 4px 9px;
+  border: 1px solid var(--rule-lit);
+  border-radius: 2px;
+  font-size: 11px;
+  color: var(--slate);
+}
+
+.sitting-queue li.now { border-color: var(--vellum); color: var(--vellum); }
+.sitting-queue li.done { color: var(--filed); border-color: var(--filed); }
+.sitting-queue li.skipped { color: var(--slate); text-decoration: line-through; }
+
+.sitting-ask {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* The sentence and the button it is asking you to press belong on one line.
+ * `flex: 1` let the paragraph grow into all the free space and pushed the
+ * button onto a row of its own, halfway across the page from the words that
+ * explain it. */
+.sitting-ask p { margin: 0; flex: 0 1 68ch; min-width: 240px; margin-right: auto;
+                 font: 12px/1.5 var(--sans); color: var(--vellum); }
+
+/* ------------------------------------------------------------------ console */
+
+/* At rest the console is a strip: enough to say nothing is running, not
+ * enough to push the actions off screen - which is what a third of the page
+ * did to the very list it is there to report on. A run makes it the subject
+ * of the page instead. */
+.console-wrap {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 108px;
+  border-top: 1px solid var(--rule-lit);
+  /* The bench above scrolls, and a card sliced off by a hard edge reads as a
+   * broken layout rather than as "there is more below". */
+  box-shadow: 0 -14px 18px -14px #000;
+}
+
+body.running .console-wrap { flex: 0 0 58%; height: auto; }
+
+.console-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 24px;
+  background: var(--ink-2);
+  border-bottom: 1px solid var(--rule);
+  font-size: 11px;
+  color: var(--vellum-dim);
+}
+
+.console-cmd { color: var(--slate); margin-left: auto; }
+
+.dot {
+  flex: none;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--rule-lit);
+}
+.dot.run  { background: var(--focus); animation: pulse 1.1s ease-in-out infinite; }
+.dot.ok   { background: var(--filed); }
+.dot.err  { background: var(--stamp); }
+.dot.wait { background: var(--brass); animation: pulse 1.6s ease-in-out infinite; }
+
+@keyframes pulse { 50% { opacity: 0.25; } }
+
+.console {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 12px 24px;
+  overflow: auto;
+  background: #06080b;
+  font: 12px/1.55 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.console:empty::before {
+  content: "Nothing running. Pick something under What now.";
+  color: var(--slate);
+}
+
+/* Answering a prompt. Present for the whole run, lit only while something is
+ * actually waiting - the apps pause on a sign-out, on a security challenge,
+ * and on every receipt the re-check pass offers to relabel. */
+.reply {
+  flex: none;
+  padding: 10px 24px 12px;
+  background: var(--ink-2);
+  border-top: 1px solid var(--rule);
+}
+
+.reply.pending { border-top: 2px solid var(--brass); background: var(--ink-3); }
+
+.reply-prompt {
+  display: block;
+  min-height: 1.5em;
+  margin-bottom: 8px;
+  color: var(--brass);
+  white-space: pre-wrap;
+}
+
+.reply-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.reply-row input {
+  flex: 1;
+  min-width: 180px;
+  padding: 8px 10px;
+  background: var(--ink);
+  border: 1px solid var(--rule-lit);
+  border-radius: 3px;
+}
+
+.reply-row input::placeholder { color: var(--slate); }
+
+/* -------------------------------------------------------------------- btn */
+
+.btn {
+  padding: 8px 14px;
+  border: 1px solid var(--rule-lit);
+  border-radius: 3px;
+  background: var(--ink-3);
+  cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: 0.03em;
+}
+
+.btn:hover { border-color: var(--vellum-dim); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-paper { background: var(--vellum); border-color: var(--vellum); color: var(--ink); font-weight: 600; }
+.btn-paper:hover { border-color: var(--vellum); background: #fff9ea; }
+
+.btn-quiet { background: none; }
+.btn-stop { margin-left: auto; color: var(--stamp); border-color: var(--rule-lit); }
+.btn-stop:hover { border-color: var(--stamp); }
+
+/* ------------------------------------------------------------------- footer */
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 22px;
+  border-top: 1px solid var(--rule);
+  background: var(--ink-2);
+  font-size: 11px;
+  color: var(--slate);
+}
+
+footer a { color: var(--slate); text-decoration: none; border-bottom: 1px solid transparent; }
+footer a:hover { color: var(--vellum-dim); border-bottom-color: currentColor; }
+
+/* --------------------------------------------------------------- responsive */
+
+@media (max-width: 900px) {
+  main { grid-template-columns: minmax(0, 1fr); }
+  .register { border-right: 0; border-bottom: 1px solid var(--rule-lit); }
+  .register-list { max-height: 38vh; }
+  .masthead { flex-wrap: wrap; gap: 8px 20px; }
+  .masthead-side .root { display: none; }
+  .console-wrap { flex-basis: clamp(140px, 40%, 320px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
