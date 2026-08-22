@@ -324,3 +324,29 @@ def test_a_quiet_pass_sends_nothing(monkeypatch):
     monkeypatch.setattr(schedule, "one_pass", lambda *a, **k: ([], []))
     assert schedule.pass_and_notify(Path("/nowhere"), None, "2026-08-22") == 0
     assert sent == []
+
+
+# -- whether anyone would even be told -------------------------------------
+
+def test_once_says_notifications_are_on_when_configured(monkeypatch, capsys):
+    """`configured()` existed and nothing shipping ever called it, so a
+    typo'd PAPERPULL_NTFY_URL produced a scheduler that ran forever and said
+    nothing - indistinguishable from "nothing needed you". --once is what
+    docs/docker.md tells a person to run to check their compose file, so it
+    has to say this too, not just the loop."""
+    schedule = _schedule()
+    monkeypatch.setenv("PAPERPULL_NTFY_URL",
+                       "https://ntfy.example.com/paperpull")
+    monkeypatch.setattr(schedule, "pass_and_notify", lambda *a, **k: 0)
+    assert schedule.main(["--once"]) == 0
+    assert "Notifications: on." in capsys.readouterr().out
+
+
+def test_once_says_notifications_are_off_when_unset(monkeypatch, capsys):
+    schedule = _schedule()
+    monkeypatch.delenv("PAPERPULL_NTFY_URL", raising=False)
+    monkeypatch.setattr(schedule, "pass_and_notify", lambda *a, **k: 0)
+    assert schedule.main(["--once"]) == 0
+    out = capsys.readouterr().out
+    assert "Notifications: off" in out
+    assert "PAPERPULL_NTFY_URL" in out

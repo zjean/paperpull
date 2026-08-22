@@ -281,10 +281,22 @@ def main(argv=None) -> int:
         print(f"!! {e}", file=sys.stderr)
         return 2
 
+    # Printed once at startup rather than left to notify.send's own silence:
+    # an install that typo'd PAPERPULL_NTFY_URL, or set it on the wrong
+    # compose service, would otherwise run forever and never say a word,
+    # indistinguishable from "nothing needed you" - the exact invisible
+    # failure this feature exists to end, reproduced one level up.
+    notify_line = ("Notifications: on." if notify.configured()
+                   else "Notifications: off (PAPERPULL_NTFY_URL is not set).")
+
     if args.once:
+        # docs/docker.md points people at --once for checking their compose
+        # file, so this is the moment to tell them what they configured.
+        print(notify_line)
         return pass_and_notify(apps_root, config_root, date.today().isoformat())
 
     print(f"Scheduler up. One pass a day at {hour:02d}:00 local time.")
+    print(notify_line)
     ran_on = ""
     while True:
         now = datetime.now()
