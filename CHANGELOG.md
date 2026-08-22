@@ -39,6 +39,12 @@ All notable changes to PaperPull are recorded here. Versioning follows
   blocks long, and does nothing when unconfigured. Standard library only
   (`urllib.request`) — no new dependency.
 
+### Changed
+- `tools/schedule.py --once` now exits non-zero when the pass it ran raised,
+  rather than always returning 0. Consistent with the rest of the project's
+  "non-zero means broken" rule, but a cron wrapper written against the old
+  behavior would need to account for it.
+
 ## [0.10.0] — 2026-08-21
 
 ### Added
