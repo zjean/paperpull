@@ -126,7 +126,7 @@ def run_one(account: dict, apps_root: Path) -> int:
     return proc.returncode
 
 
-def outcome(account: dict, code: int, session: dict) -> tuple[str, str] | None:
+def outcome(code: int, session: dict) -> tuple[str, str] | None:
     """What this run means to a person: a park, an error, or nothing.
 
     The session is consulted because the exit code cannot answer this on its
@@ -193,8 +193,7 @@ def one_pass(apps_root: Path, config_root, today: str) -> tuple[list, list]:
             print(f"  ! exited {code}")
         # Re-read after the run: the app writes the reason as it parks, and
         # this is where it is read back. See appload.session_record.
-        result = outcome(account, code, appload.session_record(
-            account["output_dir"]))
+        result = outcome(code, appload.session_record(account["output_dir"]))
         if result is None:
             continue
         kind, why = result

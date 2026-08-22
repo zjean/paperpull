@@ -177,27 +177,22 @@ def test_a_bad_hour_exits_two_rather_than_tracebacking(monkeypatch, capsys):
 
 # -- what a run meant, and what gets said about it -------------------------
 
-def _park_account(app="youfone", account="primary"):
-    return {"app": app, "account": account, "output_dir": "/data/youfone",
-            "config": "/config/youfone/config.json"}
-
-
 def test_a_parked_run_is_something_a_person_must_act_on():
     schedule = _schedule()
     session = {"state": "parked", "parked_reason": "no signed-in tab"}
-    assert schedule.outcome(_park_account(), 0, session) == (
+    assert schedule.outcome(0, session) == (
         schedule.PARKED, "no signed-in tab")
 
 
 def test_a_clean_run_says_nothing():
     """The exit code is 0 for both, which is why the session is consulted."""
     schedule = _schedule()
-    assert schedule.outcome(_park_account(), 0, {"state": "warm"}) is None
+    assert schedule.outcome(0, {"state": "warm"}) is None
 
 
 def test_a_parked_run_with_no_reason_still_asks_for_a_person():
     schedule = _schedule()
-    kind, why = schedule.outcome(_park_account(), 0, {"state": "parked"})
+    kind, why = schedule.outcome(0, {"state": "parked"})
     assert kind == schedule.PARKED
     assert why
 
@@ -205,21 +200,21 @@ def test_a_parked_run_with_no_reason_still_asks_for_a_person():
 def test_being_terminated_is_not_an_error():
     """143 is the container being stopped, or someone pressing Stop."""
     schedule = _schedule()
-    assert schedule.outcome(_park_account(), schedule.TERMINATED_EXIT, {}) is None
+    assert schedule.outcome(schedule.TERMINATED_EXIT, {}) is None
 
 
 def test_a_busy_provider_is_reported():
     """Transient, but if it stops being transient a wedged lock means this
     account silently never runs again - which is what this exists to end."""
     schedule = _schedule()
-    kind, why = schedule.outcome(_park_account(), 4, {})
+    kind, why = schedule.outcome(4, {})
     assert kind == schedule.ERROR
     assert "4" in why
 
 
 def test_any_other_non_zero_exit_is_an_error():
     schedule = _schedule()
-    assert schedule.outcome(_park_account(), 1, {})[0] == schedule.ERROR
+    assert schedule.outcome(1, {})[0] == schedule.ERROR
 
 
 def test_a_quiet_pass_has_nothing_to_send():
