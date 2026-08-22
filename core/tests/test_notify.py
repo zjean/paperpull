@@ -111,3 +111,11 @@ def test_an_unreachable_server_is_reported_not_raised():
 def test_a_refused_message_is_reported_not_raised():
     opener = FakeOpener(status=403)
     assert notify.send("t", "m", env=CONFIGURED, opener=opener) is False
+
+
+def test_a_malformed_url_is_reported_not_raised():
+    """A schemeless URL (e.g. missing https://) must not break the run.
+    This tests the headline guarantee: misconfiguration is survivable."""
+    opener = FakeOpener()
+    assert notify.send("t", "m", env={"PAPERPULL_NTFY_URL": "ntfy.example.com/paperpull"},
+                       opener=opener) is False

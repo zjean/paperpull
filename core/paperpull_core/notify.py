@@ -65,25 +65,27 @@ def send(title: str, message: str, tags: Iterable[str] = (),
         return False
 
     headers = {"Title": title, "Content-Type": "text/plain; charset=utf-8"}
-    tags = tuple(tags)
-    if tags:
-        headers["Tags"] = ",".join(tags)
     if priority is not None:
         headers["Priority"] = str(priority)
     token = (_env(env).get(TOKEN_VAR) or "").strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    request = urllib.request.Request(
-        url, data=message.encode("utf-8"), headers=headers, method="POST")
     open_it = urllib.request.urlopen if opener is None else opener
 
     # Deliberately every exception, not a chosen few. urllib raises URLError,
     # HTTPError, socket.timeout, ssl.SSLError and UnicodeEncodeError (a
     # non-ASCII title is a header, and headers are latin-1) for causes that
     # all mean the same thing here: the message did not arrive, and the run
-    # this is reporting on must carry on regardless.
+    # this is reporting on must carry on regardless. We also catch here:
+    # ValueError from a malformed URL, TypeError from a non-iterable tags or
+    # non-string items in tags, and AttributeError from a non-string message.
     try:
+        tags_tuple = tuple(tags)
+        if tags_tuple:
+            headers["Tags"] = ",".join(tags_tuple)
+        request = urllib.request.Request(
+            url, data=message.encode("utf-8"), headers=headers, method="POST")
         with open_it(request, timeout=TIMEOUT_SECONDS) as response:
             status = getattr(response, "status", 0) or 0
     except Exception as e:
