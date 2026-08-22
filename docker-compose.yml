@@ -145,6 +145,15 @@ services:
       # Local hour for the daily pass. Pick one you are usually awake for:
       # a parked account is only actionable by you.
       PAPERPULL_SCHEDULE_HOUR: ${PAPERPULL_SCHEDULE_HOUR:-7}
+      # Optional, and off unless you set it. Where to tell a person that a
+      # pass parked an account or went wrong - the full topic URL, e.g.
+      # https://ntfy.sh/<something-unguessable>. Nothing else in PaperPull
+      # makes an outbound call; read the ntfy section of SECURITY.md before
+      # you set this, because on ntfy.sh the topic name is the only thing
+      # keeping strangers out.
+      PAPERPULL_NTFY_URL: ${PAPERPULL_NTFY_URL:-}
+      # Only for a topic that requires one - a server of your own, usually.
+      PAPERPULL_NTFY_TOKEN: ${PAPERPULL_NTFY_TOKEN:-}
     volumes:
       - ./config:/config
       - ./data:/data

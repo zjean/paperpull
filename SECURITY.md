@@ -58,6 +58,33 @@ The `.gitignore` already blocks all of the following. Do not override it.
 - **Delete-safe.** A sticky `downloaded_ok` marker means deleting the PDFs after
   you import them elsewhere will not cause re-downloads.
 
+## Notifications
+
+Until this feature, nothing in PaperPull ever sent anything anywhere. This is
+the first outbound call in the project, so it earns its own section rather
+than a line in the one above.
+
+It happens only from the `scheduler` container, only during an unattended
+pass, and only when that pass parked an account, hit an error, or found a
+perishable account (Simyo) due — a clean pass, a quiet pass, and anything you
+started yourself from the panel or a terminal send nothing. You are already
+watching your own runs; this exists for the one you are not.
+
+A message names the **provider, the account label, and the reason** — for
+example `youfone/primary - no signed-in tab`. It never contains a document, an
+amount, a customer number, or anything read off a page. That is enough to act
+on from a phone and enough to tell whoever reads it which providers you use.
+
+**On ntfy.sh a topic has no authentication: the topic name is the credential.**
+Anyone who learns it can read every message ever sent to it. The only
+protections are an unguessable topic name or a server of your own —
+`PAPERPULL_NTFY_TOKEN` exists to authenticate to a protected topic, but nothing
+requires you to set it, and a public ntfy.sh topic with no token is exactly as
+open as its name is guessable.
+
+Leaving `PAPERPULL_NTFY_URL` empty means nothing is ever sent. That is the
+default.
+
 ## Running it in Docker
 
 [docs/docker.md](docs/docker.md) describes a deployment where the control panel

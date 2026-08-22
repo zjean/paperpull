@@ -276,6 +276,44 @@ fixing in code. Open the browser desktop, sign back in to that provider, and
 the next pass — scheduled or a manual `--once` — picks it up from where it
 left off.
 
+#### Notifications
+
+A parked account, or a perishable one that has come due, is invisible unless
+you go looking — `tools/due.py` will say so, and `docker compose logs
+scheduler` will scroll past it, but neither one taps you on the shoulder. Set
+`PAPERPULL_NTFY_URL` in `.env` to a topic URL — e.g.
+`https://ntfy.sh/paperpull-8f3c1a9e7b` — and the scheduler will push there
+instead of leaving it to whoever next thinks to check. Left empty, which is
+the default, nothing is sent; `PAPERPULL_NTFY_TOKEN` is only for a topic that
+requires a bearer token, which ntfy.sh topics do not by default.
+
+A message names the provider, the account label, and why, one line per
+account, e.g.:
+
+```
+PaperPull: 1 needs you
+
+Needs you:
+  youfone/primary - no signed-in tab
+```
+
+One message per pass, sent only when there is something to say — not one push
+per account, and not a daily "all fine" you would learn to ignore within a
+week.
+
+What it will **not** notify about, and why:
+
+- **A clean pass, or a quiet one.** Nothing parked, nothing errored, nothing
+  due — there is nothing to act on, so there is nothing to send.
+- **A run you started yourself**, from the panel's Pilot/Run All or a bare
+  `python youfone_docs.py` at a terminal. You are looking at that output
+  already; a push about something on your own screen is noise, not a signal.
+
+Before you point this at anything, read the *Notifications* section of
+[SECURITY.md](../SECURITY.md#notifications): on ntfy.sh the topic name is the
+only thing standing between a stranger and every message you have ever sent,
+including which providers you use.
+
 ### Restarting things
 
 ```bash
