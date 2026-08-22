@@ -165,6 +165,28 @@ def _config_files(app_dir: Path, config_root: Optional[Path]):
     return found
 
 
+def session_record(output_dir) -> dict:
+    """The `session` block of this account's sentinel.json, or {}.
+
+    Shared with tools/schedule.py, which asks the same question about a single
+    account the moment its run finishes. It has to ask, because the run's exit
+    code cannot answer it: a parked run and a clean run both exit 0, on
+    purpose, so that cron alerting stays worth reading.
+
+    Every failure is {} rather than an exception. One account with an
+    unreadable sentinel must not end a pass that has fifteen others in it.
+    """
+    try:
+        record = json.loads(
+            (Path(output_dir) / "sentinel.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(record, dict):
+        return {}
+    session = record.get(sentinel.SESSION_KEY) or {}
+    return session if isinstance(session, dict) else {}
+
+
 def accounts(apps_root: Path, config_root: Optional[Path]) -> List[dict]:
     """Every app/account pair, shaped for paperpull_core.due.plan."""
     out: List[dict] = []
@@ -215,16 +237,7 @@ def accounts(apps_root: Path, config_root: Optional[Path]) -> List[dict]:
                 # parked, while the panel's own account list - which does
                 # resolve this - showed the opposite about the same account.
                 output_dir = app_dir / output_dir
-            session = {}
-            try:
-                record = json.loads(
-                    (output_dir / "sentinel.json").read_text(encoding="utf-8"))
-                if isinstance(record, dict):
-                    session = record.get(sentinel.SESSION_KEY) or {}
-                if not isinstance(session, dict):
-                    session = {}
-            except (OSError, json.JSONDecodeError):
-                session = {}
+            session = session_record(output_dir)
             last_alive = str(session.get(sentinel.LAST_ALIVE_KEY) or "")
             out.append({
                 "app": app_dir.name,
@@ -237,5 +250,7 @@ def accounts(apps_root: Path, config_root: Optional[Path]) -> List[dict]:
                     output_dir / "progress.json"),
                 "last_checked_date": last_alive[:10],
                 "parked": session.get(sentinel.STATE_KEY) == sentinel.PARKED,
+                "parked_reason": str(
+                    session.get(sentinel.PARKED_REASON_KEY) or ""),
             })
     return out

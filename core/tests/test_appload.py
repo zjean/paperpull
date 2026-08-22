@@ -91,3 +91,46 @@ def test_two_providers_sharing_one_lock_dir_do_not_share_a_slot(tmp_path,
     locks.acquire(directory, "simyo", 1, "primary")
     # Would raise ProviderBusy if the slug were not part of the path.
     assert locks.acquire(directory, "youfone", 1, "primary").path.exists()
+
+
+# -- session record ---------------------------------------------------------
+
+
+def test_the_session_record_is_the_sentinels_session_block(tmp_path):
+    (tmp_path / "sentinel.json").write_text(
+        '{"session": {"state": "parked", "parked_reason": "no signed-in tab"}}',
+        encoding="utf-8")
+    assert appload.session_record(tmp_path) == {
+        "state": "parked", "parked_reason": "no signed-in tab"}
+
+
+def test_a_missing_or_broken_sentinel_is_an_empty_record(tmp_path):
+    """Never an exception: one unreadable account must not end the pass."""
+    assert appload.session_record(tmp_path) == {}
+    (tmp_path / "sentinel.json").write_text("[1, 2, 3]", encoding="utf-8")
+    assert appload.session_record(tmp_path) == {}
+    (tmp_path / "sentinel.json").write_text("{not json", encoding="utf-8")
+    assert appload.session_record(tmp_path) == {}
+
+
+def test_a_non_dict_session_block_is_an_empty_record(tmp_path):
+    (tmp_path / "sentinel.json").write_text('{"session": "nope"}',
+                                            encoding="utf-8")
+    assert appload.session_record(tmp_path) == {}
+
+
+def test_accounts_carry_the_parked_reason(tmp_path):
+    app_dir = tmp_path / "apps" / "testco"
+    app_dir.mkdir(parents=True)
+    (app_dir / "testco_docs.py").write_text("", encoding="utf-8")
+    out = tmp_path / "data" / "testco"
+    out.mkdir(parents=True)
+    (app_dir / "config.json").write_text(
+        '{"output_dir": "%s"}' % out.as_posix(), encoding="utf-8")
+    (out / "sentinel.json").write_text(
+        '{"session": {"state": "parked", "parked_reason": "identity unproven"}}',
+        encoding="utf-8")
+
+    record = appload.accounts(tmp_path / "apps", None)[0]
+    assert record["parked"] is True
+    assert record["parked_reason"] == "identity unproven"
