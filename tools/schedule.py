@@ -5,11 +5,15 @@ image as the panel and invokes the same app CLIs the panel does.
 
 The split is one declared fact. A provider whose AppSpec leaves
 `session_lifetime_minutes` as None holds its session for days, so a scheduled
-run will usually find it alive - and if it does not, the run parks and exits 0
-and nothing is woken up. A provider that declares a lifetime (Simyo: ten
-minutes) can only be pulled while a human is sitting there, so it is never
-started here; it is printed, for the panel's sitting and for whatever notifier
-you point at this log.
+run will usually find it alive - and if it does not, the run still exits 0
+rather than failing, so that a non-zero exit keeps meaning "something is
+broken"; `outcome` has to consult the account's session afterward for exactly
+that reason, and `pass_and_notify` tells a person once a pass has parked an
+account or errored, rather than leaving that for whoever next reads this log.
+A provider that declares a lifetime (Simyo: ten minutes) can only be pulled
+while a human is sitting there, so it is never started here; it is printed
+for the panel's sitting, and named in that same notification as an account
+that needs a person too.
 
 The command is `--unattended --all --yes`, and `--all` is not an overreach.
 It is the only action that asks the provider what exists - an app's `--all`
