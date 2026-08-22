@@ -55,3 +55,21 @@ def test_identity_and_session_do_not_overwrite_each_other(tmp_path):
     fresh = store_at(tmp_path)
     assert sentinel.read_anchors(fresh) == [{"id": "101", "date": "2026-01-01"}]
     assert sentinel.session_state(fresh) == sentinel.PARKED
+
+
+def test_the_parked_reason_round_trips(tmp_path):
+    """The scheduler says why a human is needed, not merely that one is."""
+    store = store_at(tmp_path)
+    sentinel.park(store, "no signed-in tab", "2026-08-22T03:00:00")
+    assert sentinel.parked_reason(store_at(tmp_path)) == "no signed-in tab"
+
+
+def test_a_warm_session_has_no_parked_reason(tmp_path):
+    store = store_at(tmp_path)
+    sentinel.park(store, "no signed-in tab", "2026-08-22T03:00:00")
+    sentinel.mark_warm(store, "2026-08-22T04:00:00")
+    assert sentinel.parked_reason(store_at(tmp_path)) == ""
+
+
+def test_an_account_with_no_session_yet_has_no_parked_reason(tmp_path):
+    assert sentinel.parked_reason(store_at(tmp_path)) == ""
