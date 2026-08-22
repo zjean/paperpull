@@ -179,7 +179,10 @@ def session_record(output_dir) -> dict:
     try:
         record = json.loads(
             (Path(output_dir) / "sentinel.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # OSError for file-system errors (missing, permission, etc).
+        # ValueError covers both UnicodeDecodeError (invalid UTF-8) and
+        # json.JSONDecodeError (invalid JSON), which are its subclasses.
         return {}
     if not isinstance(record, dict):
         return {}
