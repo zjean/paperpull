@@ -31,20 +31,47 @@ import app as panel  # noqa: E402
 # -- _accounts(): the fields beyond `name` ----------------------------------
 
 
-@pytest.fixture()
-def fake_app(tmp_path):
+@pytest.fixture(params=["native", "config-root"])
+def fake_app(request, tmp_path, monkeypatch):
+    """The app directory, under both config layouts the panel supports.
+
+    Parametrised rather than left to the ambient environment, because the two
+    layouts are not interchangeable: natively a config sits in the app's own
+    directory, but the image sets PAPERPULL_CONFIG_ROOT=/config, so
+    `_config_dir` looks somewhere else entirely. A test that writes its config
+    into app_dir and leaves the variable alone therefore passes on a laptop
+    and fails inside the container it ships in - which is exactly how the four
+    _accounts() tests below were green locally and red in CI, reading the
+    image's real (sentinel-less) /config/ally/config.json instead of the one
+    the test wrote. test_api_due_orders_the_perishable_account_first already
+    knew to clear the variable; these did not.
+    """
     app_dir = tmp_path / "apps" / "ally"
     app_dir.mkdir(parents=True)
     (app_dir / "ally_docs.py").write_text("x\n", encoding="utf-8")
+    if request.param == "native":
+        monkeypatch.delenv("PAPERPULL_CONFIG_ROOT", raising=False)
+    else:
+        root = tmp_path / "config"
+        (root / app_dir.name).mkdir(parents=True)
+        monkeypatch.setenv("PAPERPULL_CONFIG_ROOT", str(root))
     return app_dir
+
+
+def _write_config(app_dir, out):
+    """Wherever this layout says this app's config lives - which is the point
+    of asking the panel rather than assuming app_dir."""
+    cfg_dir = panel._config_dir(app_dir)
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.json").write_text(
+        json.dumps({"output_dir": str(out)}), encoding="utf-8")
 
 
 def _write_config_and_sentinel(app_dir, session=None, identity=None):
     """A primary config plus the sentinel.json _accounts() reads for it."""
     out = app_dir / "out"
     out.mkdir()
-    (app_dir / "config.json").write_text(
-        json.dumps({"output_dir": str(out)}), encoding="utf-8")
+    _write_config(app_dir, out)
     payload = {}
     if session is not None:
         payload["session"] = session
@@ -130,8 +157,7 @@ def test_an_account_with_no_adopted_identity_is_unidentified(fake_app):
 def test_an_account_with_no_sentinel_yet_reports_nothing_known(fake_app):
     """Before a first run, there is no sentinel.json at all - _accounts()
     must report the account, just with every session field empty/false."""
-    (fake_app / "config.json").write_text(
-        json.dumps({"output_dir": str(fake_app / "out")}), encoding="utf-8")
+    _write_config(fake_app, fake_app / "out")
 
     rec = _primary(panel._accounts(fake_app))
     assert rec == {"name": "primary", "state": "", "last_alive": "",
