@@ -126,7 +126,7 @@ def run_one(account: dict, apps_root: Path) -> int:
     return proc.returncode
 
 
-def outcome(account, code, session):
+def outcome(account: dict, code: int, session: dict) -> tuple[str, str] | None:
     """What this run means to a person: a park, an error, or nothing.
 
     The session is consulted because the exit code cannot answer this on its
@@ -143,7 +143,7 @@ def outcome(account, code, session):
     return (ERROR, f"exited {code}")
 
 
-def digest(parked, errors):
+def digest(parked: list, errors: list) -> tuple[str, str, tuple, int] | None:
     """One message for the whole pass, or None if there is nothing to say.
 
     One message rather than one per account: a four-account bad night should
@@ -153,7 +153,8 @@ def digest(parked, errors):
         return None
     counts = []
     if parked:
-        counts.append(f"{len(parked)} need you")
+        verb = "needs" if len(parked) == 1 else "need"
+        counts.append(f"{len(parked)} {verb} you")
     if errors:
         counts.append(f"{len(errors)} error" + ("s" if len(errors) > 1 else ""))
     title = "PaperPull: " + ", ".join(counts)
@@ -173,7 +174,7 @@ def digest(parked, errors):
     return (title, "\n".join(lines), tags, priority)
 
 
-def one_pass(apps_root: Path, config_root, today: str):
+def one_pass(apps_root: Path, config_root, today: str) -> tuple[list, list]:
     """Run everything due that can run itself. Returns (parked, errors)."""
     accounts = appload.accounts(apps_root, config_root)
     plan = due.plan(accounts, today)

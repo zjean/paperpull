@@ -245,6 +245,54 @@ def test_the_digest_says_how_many_need_a_person():
     assert "2" in title
 
 
+def test_one_pass_files_each_account_where_it_belongs(monkeypatch):
+    """outcome() and digest() are each tested in isolation, and every other
+    test here replaces one_pass wholesale - so nothing exercises the wiring
+    inside one_pass itself: which list an account's (who, why) actually lands
+    in. Swap the two `.append` targets in one_pass and every other test in
+    this file still passes while a park is reported as an error and vice
+    versa; this is the one test that would catch that."""
+    schedule = _schedule()
+
+    clean = {"app": "ally", "account": "primary", "output_dir": "/data/ally",
+             "session_lifetime_minutes": None}
+    goes_parked = {"app": "youfone", "account": "primary",
+                   "output_dir": "/data/youfone",
+                   "session_lifetime_minutes": None}
+    goes_error = {"app": "simyo", "account": "primary",
+                  "output_dir": "/data/simyo",
+                  "session_lifetime_minutes": None}
+    perishable = {"app": "kpn", "account": "primary",
+                  "output_dir": "/data/kpn", "session_lifetime_minutes": 10}
+    accounts = [clean, goes_parked, goes_error, perishable]
+
+    monkeypatch.setattr(schedule.appload, "accounts",
+                         lambda apps_root, config_root: accounts)
+    monkeypatch.setattr(schedule.due, "plan", lambda accounts, today: accounts)
+
+    codes = {"ally": 0, "youfone": 0, "simyo": 1}
+    monkeypatch.setattr(schedule, "run_one",
+                         lambda account, apps_root: codes[account["app"]])
+
+    sessions = {
+        "/data/ally": {"state": "warm"},
+        "/data/youfone": {"state": "parked",
+                           "parked_reason": "no signed-in tab"},
+        "/data/simyo": {},
+    }
+    monkeypatch.setattr(schedule.appload, "session_record",
+                         lambda output_dir: sessions[output_dir])
+
+    parked, errors = schedule.one_pass(Path("/nowhere"), None, "2026-08-22")
+
+    assert ("youfone/primary", "no signed-in tab") in parked
+    assert ("simyo/primary", "exited 1") in errors
+    assert ("kpn/primary", "needs a person to sign in") in parked
+    assert not any(who.startswith("ally/") for who, _ in parked)
+    assert not any(who.startswith("ally/") for who, _ in errors)
+    assert len(parked) == 2 and len(errors) == 1
+
+
 def test_a_pass_that_blows_up_still_tells_someone(monkeypatch):
     """Otherwise the one failure that hides every other failure is this
     module's own."""
