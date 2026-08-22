@@ -295,17 +295,25 @@ def test_one_pass_files_each_account_where_it_belongs(monkeypatch):
 
 def test_a_pass_that_blows_up_still_tells_someone(monkeypatch):
     """Otherwise the one failure that hides every other failure is this
-    module's own."""
+    module's own. The message names the exception's type only, never its
+    own text: SECURITY.md's Notifications section promises a message never
+    carries anything read off a page, and a raw str(exception) is free text
+    that can carry an absolute path (a FileNotFoundError, a KeyError) which
+    on a native install names the operator."""
     schedule = _schedule()
     sent = []
     monkeypatch.setattr(schedule.notify, "send",
                         lambda *a, **k: sent.append((a, k)) or True)
-    monkeypatch.setattr(schedule, "one_pass",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        schedule, "one_pass",
+        lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("boom: /Users/jane/secret")))
     code = schedule.pass_and_notify(Path("/nowhere"), None, "2026-08-22")
     assert code != 0
     assert sent, "a pass that raised sent nothing"
-    assert "boom" in str(sent[0])
+    message = sent[0][0][1]
+    assert "boom" not in message and "/Users/jane" not in message
+    assert "RuntimeError" in message
 
 
 def test_a_quiet_pass_sends_nothing(monkeypatch):

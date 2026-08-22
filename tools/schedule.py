@@ -223,8 +223,15 @@ def pass_and_notify(apps_root: Path, config_root, today: str) -> int:
     try:
         parked, errors = one_pass(apps_root, config_root, today)
     except Exception as e:
+        # The type only, never str(e): SECURITY.md promises a message never
+        # carries anything read off a page, and a raw exception string is
+        # free text - a FileNotFoundError or KeyError commonly carries an
+        # absolute path, which on a native install names the operator. The
+        # print above already has the full detail; an operator has to open
+        # the log for a pass-level failure anyway.
         print(f"  !! the pass failed: {e}")
-        notify.send("PaperPull: the scheduled pass failed", str(e),
+        notify.send("PaperPull: the scheduled pass failed",
+                    f"{type(e).__name__}: see the scheduler log",
                     tags=("rotating_light",), priority=5)
         return 1
 
