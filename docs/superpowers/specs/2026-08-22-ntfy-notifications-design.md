@@ -46,6 +46,7 @@ produces something a human must act on. Nothing else notifies.
 | Event | Notifies |
 |---|---|
 | An account parked (exit 0 **and** its sentinel says parked) | **needs a human** |
+| A perishable account is due (Simyo) — it is never started, so it can never park | **needs a human** |
 | Provider busy (exit 4) | **error** |
 | Bad flag combination (exit 2), or any other non-zero exit | **error** |
 | Clean run, nothing parked (exit 0) | silent |
@@ -64,6 +65,13 @@ rediscovered:
 - **The pass sends one digest, not one push per account.** A four-account bad
   night is one message rather than four. The cost is that individual items
   cannot be dismissed separately.
+- **A due perishable account counts as "needs a human" even though it never
+  parks.** The scheduler deliberately never starts one — its session would be
+  dead before a download finished — so it produces no exit code and no sentinel
+  state to read. Left out, the one provider that can *only* be served by a
+  person would be the one that never asks for one, which would invert the
+  feature's purpose. It is not a park in the sentinel's sense, and the code
+  says so where it is added.
 
 ### What does NOT notify
 
