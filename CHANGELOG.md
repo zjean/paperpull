@@ -101,6 +101,11 @@ All notable changes to PaperPull are recorded here. Versioning follows
   no-core case, the page's own files, and a test that no action can ship as a
   bare verb with no sentence explaining it. That last one is the regression
   this redesign exists to prevent.
+- An inline SVG favicon. There is no `/favicon.ico` route, so the browser
+  asked for one on every page load and logged a 404 in the console on every
+  one. A `data:` URI also keeps the promise the rest of the page makes: a panel
+  driving signed-in financial accounts fetches nothing from anywhere, and an
+  icon file is still a request.
 - `docs/control-panel.png`, a current still of the panel.
 
 ### Fixed

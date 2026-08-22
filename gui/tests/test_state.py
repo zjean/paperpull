@@ -186,6 +186,19 @@ def test_the_page_is_three_files_and_all_three_are_served():
         assert (panel.STATIC / name).is_file(), name
 
 
+def test_the_page_carries_its_own_icon():
+    """Inline, because there is no /favicon.ico route - the browser asks for
+    one on every page load and logged a 404 in the console on every one. A
+    data: URI also keeps the promise that this page fetches nothing from
+    anywhere: a panel driving signed-in financial accounts should make no
+    outbound request at all, and an icon file is still a request."""
+    assert 'rel="icon"' in panel.HTML
+    assert "data:image/svg+xml" in panel.HTML
+    # No route serves it, and none should have to.
+    assert not any(getattr(r, "path", "") == "/favicon.ico"
+                   for r in panel.app.routes)
+
+
 def test_the_page_asks_for_the_stylesheet_and_the_script_it_needs():
     assert '/panel.css' in panel.HTML
     assert '/panel.js' in panel.HTML
