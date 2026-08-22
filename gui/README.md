@@ -16,13 +16,27 @@ each, grouped by what it needs and ordered so the first row is the one to open:
 |---|---|
 | **Needs a sign-in** | The provider signed this session out. Nothing runs until someone signs in again. |
 | **Needs confirming** | No identity recorded yet. Runs refuse to file documents until you confirm which account this is. (Simyo and Youfone only — see below.) |
-| **Due** | Enough time has passed since the newest document that the next one is plausibly there. |
-| **Nothing to do** | Checked recently enough. |
+| **Ready** | Nothing is blocking it. Whether it is worth running *now* is on the account itself and in the masthead's count, not sorted into the list. |
 
-Providers you have never set up are **not** in that list. There are seventeen
-of them on a fresh checkout and most people will never use most of them, so
-listing each one as a thing wrong with your install was noise. **+ Add an
-account** at the foot of the register is where they live instead.
+Two kinds of account are **not** in that list, behind a **`N not in use ·
+show`** line under it instead:
+
+- **Never used** — there is a `config.json`, but PaperPull has never signed in
+  to the account or downloaded anything for it. In the container this is most
+  of them: the entrypoint seeds a config for every app in the image, so a
+  household with two providers gets eighteen accounts whether it wants them or
+  not.
+- **Not set up yet** — no `config.json` at all. This is the native default for
+  every provider you have not touched.
+
+Being new is never on its own grounds for hiding an account: an account that
+needs a sign-in or needs confirming stays in the register however fresh it is.
+A freshly configured account has never run *by definition*, and the obvious
+rule ("hide what has never been used") would have hidden the very account you
+were in the middle of setting up.
+
+Typing in **Filter** searches all of them, hidden ones included, and the
+account you have open is always drawn in the list wherever it lives.
 
 **The bench**, on the right, is one account: its session, its identity, its
 newest document, when it was last looked at — and then **What now**, the
@@ -36,7 +50,7 @@ page while it does.
 **+ Add an account** creates one account's config file — the panel's only
 write. Two things go through it, and they are the same operation:
 
-- **a provider you have never set up.** Copies its tracked
+- **a provider with no account yet.** Copies its tracked
   `config.example.json` to `config.json`. Nothing is downloaded and nothing is
   signed in to; the account appears in the register and you sign in from there.
 - **a second person's account of a provider you already use.** Copies *your*
@@ -54,7 +68,9 @@ write. Two things go through it, and they are the same operation:
 
 The label becomes a filename, so it is refused rather than rewritten: 1–32
 characters of lowercase `a-z`, `0-9`, `-` or `_`. An existing config is never
-overwritten.
+overwritten, and the form says so before you press anything — each provider is
+listed with how many accounts it already has, and a label that is taken
+disables **Create it** rather than letting the server refuse it.
 
 ### Two accounts of one provider, and finding the right tab
 

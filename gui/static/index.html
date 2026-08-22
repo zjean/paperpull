@@ -44,6 +44,10 @@
       </label>
     </div>
     <div class="register-list" id="register" role="listbox" aria-label="Accounts"></div>
+    <!-- The accounts nobody chose. In the container the entrypoint writes a
+         config for every app in the image, so this is where those go until
+         someone signs in to one. -->
+    <button class="quiet-line" id="quietline" hidden></button>
     <div class="register-foot">
       <button class="rail-btn" id="add">
         <span class="rail-btn-label">+ Add an account</span>

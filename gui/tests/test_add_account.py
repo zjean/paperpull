@@ -436,3 +436,52 @@ def test_the_container_layout_is_where_this_actually_bites(apps_root,
     assert out["shared_browser"] is True
     rows = {a["account"]: a for a in panel.api_state()["accounts"]}
     assert rows["spouse"]["shares_browser_with"] == ["primary"]
+
+
+# -- a seeded config is not an account anyone set up ------------------------
+#
+# The report: "Add account shows accounts as setup, when they have never been
+# setup." In the container the entrypoint writes a config.json for every app in
+# the image on first run, and the picker labelled all of them "already set up"
+# because it asked whether a config file existed. A household with two
+# providers was told it had eighteen accounts.
+
+
+def test_a_seeded_account_is_not_reported_as_one_you_use(apps_root):
+    """The panel's own Add an account is the deliberate path, and even it does
+    not make an account "used" - only signing in or downloading does. What
+    matters here is that the row says both, so the picker can tell them
+    apart."""
+    _add({"app": "acme", "account": "primary"})
+    row = next(a for a in panel.api_state()["accounts"] if a["app"] == "acme")
+    assert row["configured"] is True
+    assert row["used"] is False
+    assert row["needs"] == "unused"
+
+
+def test_signing_in_is_what_makes_it_an_account_you_use(apps_root):
+    """The other half: once there is a sentinel the account is real, leaves
+    the quiet bucket, and appears in the register."""
+    _add({"app": "acme", "account": "primary"})
+    out = Path(_read(panel._config_path(apps_root, "primary"))["output_dir"])
+    out = out if out.is_absolute() else apps_root / out
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "sentinel.json").write_text(json.dumps(
+        {"session": {"state": "warm",
+                     "last_verified_alive": "2026-08-22T09:00:00"}}),
+        encoding="utf-8")
+    row = next(a for a in panel.api_state()["accounts"] if a["app"] == "acme")
+    assert row["used"] is True
+    assert row["needs"] not in panel.QUIET
+
+
+def test_the_label_a_seeded_config_owns_cannot_be_created_again(apps_root):
+    """The dead end behind the wrong label: the picker called a seeded
+    provider "not set up", so it suggested `primary`, so the server answered
+    409 and there was nothing else to press. The refusal is still right - this
+    pins it down so the page's own check (existingLabels) has something to
+    agree with."""
+    _add({"app": "acme", "account": "primary"})
+    with pytest.raises(HTTPException) as e:
+        _add({"app": "acme", "account": "primary"})
+    assert e.value.status_code == 409

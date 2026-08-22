@@ -226,6 +226,7 @@ main {
 .row-due    { border-left-color: var(--brass); }
 .row-confirm{ border-left-color: var(--stamp); }
 .row-setup  { border-left-color: var(--rule-lit); }
+.row-unused { border-left-color: var(--rule-lit); }
 .row-ok     { border-left-color: var(--rule-lit); }
 
 .row-top { display: flex; align-items: baseline; gap: 8px; }
@@ -255,6 +256,25 @@ main {
 }
 
 .row-life { color: var(--slate); font-size: 10px; flex: none; }
+
+.quiet-line {
+  flex: none;
+  width: 100%;
+  text-align: left;
+  padding: 9px 16px;
+  border: 0;
+  border-top: 1px solid var(--rule);
+  background: none;
+  color: var(--slate);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.quiet-line:hover { color: var(--vellum-dim); background: var(--ink-3); }
+
+.row-unused .row-provider, .row-setup .row-provider { color: var(--vellum-dim); }
 
 .register-foot { flex: none; padding: 12px 16px; border-top: 1px solid var(--rule); }
 
@@ -360,7 +380,7 @@ main {
 
 .stamp-signin, .stamp-confirm { color: var(--stamp); }
 .stamp-due { color: var(--brass); }
-.stamp-setup { color: var(--slate); }
+.stamp-setup, .stamp-unused { color: var(--slate); }
 .stamp-ok  { color: var(--filed); }
 
 .detail-why {

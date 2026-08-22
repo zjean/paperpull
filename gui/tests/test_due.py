@@ -247,7 +247,7 @@ def test_an_account_with_no_config_at_all_says_so(fake_app):
     """
     rec = _primary(panel._accounts(fake_app))
     assert rec["configured"] is False
-    assert panel._needs(rec, gated=False, due=False) == "setup"
+    assert panel._needs(rec, gated=False, due=False, used=False) == "setup"
 
 
 def test_a_configured_account_is_not_sent_back_to_setup(fake_app):
@@ -255,14 +255,16 @@ def test_a_configured_account_is_not_sent_back_to_setup(fake_app):
     _write_config(fake_app, fake_app / "out")
     rec = _primary(panel._accounts(fake_app))
     assert rec["configured"] is True
-    assert panel._needs(rec, gated=False, due=False) == "ok"
+    assert panel._needs(rec, gated=False, due=False, used=True) == "ok"
 
 
-def test_setup_sorts_below_the_accounts_that_are_actually_waiting():
+def test_setup_sorts_below_every_account_the_register_draws():
     """It blocks everything for that account, but it has no deadline and no
-    perishable session - so it must not bury a provider whose ten-minute
-    session is due right now."""
+    perishable session, and the register does not draw it at all - so it must
+    not bury a provider whose ten-minute session is due right now. This used
+    to sort above "nothing to do", from when the register still listed it.
+    """
     ranks = panel.NEEDS
-    assert ranks["setup"]["rank"] > ranks["due"]["rank"]
-    assert ranks["setup"]["rank"] > ranks["signin"]["rank"]
-    assert ranks["setup"]["rank"] < ranks["ok"]["rank"]
+    drawn = [spec["rank"] for name, spec in panel.NEEDS.items()
+             if name not in panel.QUIET]
+    assert ranks["setup"]["rank"] > max(drawn)

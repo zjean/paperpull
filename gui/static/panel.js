@@ -137,18 +137,17 @@ function rowNote(a) {
   if (a.needs === 'confirm') {
     return {text: 'Confirm which account this is.', cls: 'row-note-confirm'};
   }
-  if (a.needs === 'due') {
-    return {text: a.newest_document_date
-              ? 'Due. Newest so far ' + a.newest_document_date + '.'
-              : 'Never run.', cls: ''};
+  if (a.needs === 'setup') return {text: 'No config.json yet.', cls: ''};
+  if (a.needs === 'unused') return {text: 'Never signed in.', cls: ''};
+  // Facts, and no verdict. Whether an account is worth running now is on the
+  // account itself and in the masthead's count; repeating it per row is what
+  // turned this list into a to-do list nobody asked for.
+  if (a.last_checked_date) return {text: 'Looked ' + a.last_checked_date, cls: ''};
+  if (a.newest_document_date) {
+    return {text: 'Newest ' + a.newest_document_date, cls: ''};
   }
-  if (a.needs === 'setup') {
-    return {text: 'No config.json yet.', cls: ''};
-  }
-  // Under a "Nothing to do" heading, a "Nothing to do" note on every one of
-  // sixteen rows is noise. An empty note draws no line at all.
-  return {text: a.last_checked_date ? 'Looked ' + a.last_checked_date : '',
-          cls: ''};
+  // An empty note draws no line at all.
+  return {text: '', cls: ''};
 }
 
 /* The ordinary path through a provider, in order, minus anything this app's
@@ -174,8 +173,11 @@ function pathFor(a) {
 function nextStep(a) {
   // Every action passes --config or relies on the default one being there, so
   // highlighting any of them would be sending someone at a run that cannot
-  // start. The account's own "why" line says what to do instead.
-  if (a.needs === 'setup') return null;
+  // start. The account's own "why" line says what to do instead. Keyed on the
+  // config rather than on the bucket: an account that has a config but has
+  // never been used is not blocked on anything - it is blocked on a sign-in,
+  // which is exactly the action to highlight.
+  if (!a.configured) return null;
   const path = new Set(pathFor(a));
   // Nothing runs against a session that is not there, so this outranks every
   // other consideration - including an identity that still needs confirming,
@@ -190,35 +192,65 @@ function nextStep(a) {
 // Drawing it
 // ---------------------------------------------------------------------------
 
-// The register draws these, in this order. `setup` is deliberately absent:
-// an account with no config.json is a provider you have not set up, and on a
-// fresh checkout that is seventeen of eighteen rows, most of which nobody will
-// ever use. /api/state still reports them - the data stays complete - and they
-// are what fills the Add an account picker instead.
+// The register draws these, in this order, each heading covering one or more
+// buckets.
+//
+// Two shapes here are deliberate. `due` and `ok` share one heading, so the
+// register no longer sorts your accounts by whether they are worth running -
+// that lives on the account itself (its stamp, its "why", and the one
+// highlighted action) and in the masthead's count. And it is called "Ready"
+// rather than "Nothing to do", because a due account is in it and telling
+// someone there is nothing to do about an account that is due would be false.
+//
+// The quiet buckets (see QUIET server-side) are not here at all: they are
+// drawn only when you ask, by the line under the list.
 const GROUPS = [
-  ['signin', 'Needs a sign-in'],
-  ['confirm', 'Needs confirming'],
-  ['due', 'Due'],
-  ['ok', 'Nothing to do'],
+  [['signin'], 'Needs a sign-in'],
+  [['confirm'], 'Needs confirming'],
+  [['due', 'ok'], 'Ready'],
 ];
 
-function accountsNeeding(need) {
-  return STATE.accounts.filter(a => a.needs === need);
+// Shown only behind the "not in use" line. Two headings rather than one,
+// because they need different things done to them: a config to be written, or
+// a sign-in.
+const QUIET_GROUPS = [
+  [['unused'], 'Never used'],
+  [['setup'], 'Not set up yet'],
+];
+
+// Off by default: on a fresh container this is sixteen US providers a given
+// household will never open, seeded by the image's entrypoint rather than
+// chosen by anyone.
+let showQuiet = false;
+
+function accountsIn(needs) {
+  return STATE.accounts.filter(a => needs.includes(a.needs));
+}
+
+function isQuiet(a) {
+  return (STATE.quiet || []).includes(a.needs);
+}
+
+function quietCount() {
+  return STATE.accounts.filter(isQuiet).length;
 }
 
 function drawTally() {
-  const n = need => accountsNeeding(need).length;
+  const n = need => accountsIn([need]).length;
   const attention = n('signin') + n('confirm');
   const due = n('due');
-  const total = STATE.accounts.length - n('setup');
+  const total = STATE.accounts.length - quietCount();
   const bits = [];
   if (attention) bits.push('<span class="n-signin">' + attention + '</span> need you now');
   if (due) bits.push('<span class="n-due">' + due + '</span> due');
   if (!attention && !due) bits.push('<b>nothing needs you</b>');
   // `total` counts what the register shows, not every row /api/state returns:
-  // the providers you have never set up are not accounts you have, and
-  // counting them here read as "you have eighteen accounts and seventeen of
-  // them are broken".
+  // an app the container seeded a config for is not an account you have, and
+  // counting them here read as "you have eighteen accounts and sixteen of
+  // them are due".
+  //
+  // The due count stays: it is the one place that signal survives now that
+  // the register does not group by it.
   $('tally').innerHTML = bits.join(' &middot; ') + ' &middot; ' + total +
     ' account' + (total === 1 ? '' : 's') + ' set up';
 }
@@ -262,10 +294,14 @@ function drawRegister() {
   const q = $('filter').value.trim().toLowerCase();
   const list = $('register');
   list.innerHTML = '';
+  const matches = a => !q || key(a).toLowerCase().includes(q);
+  // A filter is someone looking for one account by name, and the whole point
+  // of typing it is to be shown what matches - including the quiet ones. So a
+  // search reaches everything; only the resting list is curated.
+  const groups = (showQuiet || q) ? GROUPS.concat(QUIET_GROUPS) : GROUPS;
   let shown = 0;
-  for (const [need, title] of GROUPS) {
-    const rows = accountsNeeding(need)
-      .filter(a => !q || key(a).toLowerCase().includes(q));
+  for (const [needs, title] of groups) {
+    const rows = accountsIn(needs).filter(matches);
     if (!rows.length) continue;
     const head = document.createElement('div');
     head.className = 'group-head';
@@ -274,12 +310,41 @@ function drawRegister() {
     list.append(head);
     for (const a of rows) { list.append(rowFor(a)); shown++; }
   }
+  // The row you are looking at is always in the list, whichever group it is
+  // in. Without this, adding an account selected a row that the register did
+  // not draw - a detail view with nothing highlighted beside it.
+  const sel = selectedAccount();
+  if (sel && !list.querySelector('[data-key="' + CSS.escape(key(sel)) + '"]')) {
+    const head = document.createElement('div');
+    head.className = 'group-head';
+    head.innerHTML = '<span>Open</span>';
+    list.append(head, rowFor(sel));
+    shown++;
+  }
   if (!shown) {
     const p = document.createElement('div');
     p.className = 'group-head';
     p.textContent = q ? 'nothing matches ' + q : 'no accounts';
     list.append(p);
   }
+  drawQuietLine();
+}
+
+/* The one line standing between you and the accounts nobody chose.
+ *
+ * A line rather than nothing at all: they are still real config files that
+ * real runs would use, and a panel that simply never mentioned them would be
+ * lying by omission the other way. A line rather than a group: on a fresh
+ * container there are sixteen, and they are the reason this list was unusable.
+ */
+function drawQuietLine() {
+  const n = quietCount();
+  const el = $('quietline');
+  el.hidden = !n || !!$('filter').value.trim();
+  if (el.hidden) return;
+  el.textContent = showQuiet
+    ? 'hide the ' + n + ' not in use'
+    : n + ' not in use \u00b7 show';
 }
 
 function rowFor(a) {
@@ -506,6 +571,7 @@ async function refresh() {
 }
 
 $('filter').oninput = () => drawRegister();
+$('quietline').onclick = () => { showQuiet = !showQuiet; drawRegister(); };
 
 // ---------------------------------------------------------------------------
 // The console, and the prompts that appear in it
@@ -852,38 +918,59 @@ $('sit').onclick = startSitting;
 // JSON file before this, and the panel's only way of mentioning either was to
 // list the un-set-up one as a problem.
 
-/* Providers you have not set up, from the rows the register hides. */
-function unconfigured() {
-  return STATE.accounts.filter(a => a.needs === 'setup');
+/* Every provider, with how many accounts of it already have a config file.
+ *
+ * Counted off `configured` rather than off any judgement about whether you
+ * "use" it, because this list answers one question: what can be added? A
+ * provider with no config can have its `primary` created; one that already
+ * has accounts can only have another, named one. Labelling by use instead is
+ * what produced "18 providers you have never used" beside a masthead saying
+ * three accounts were set up.
+ */
+function providerOptions() {
+  const byApp = new Map();
+  for (const a of STATE.accounts) {
+    byApp.set(a.app, (byApp.get(a.app) || 0) + (a.configured ? 1 : 0));
+  }
+  return [...byApp.entries()]
+    .map(([app, count]) => ({app, count}))
+    // The ones with nothing yet first: those are the ones this button is for.
+    .sort((x, y) => (x.count - y.count) || x.app.localeCompare(y.app));
 }
 
-/* Every provider, and whether it is already set up - the picker offers both,
- * because adding a second account of one you use is the same operation. */
-function providerOptions() {
-  const seen = new Map();
-  for (const a of STATE.accounts) {
-    const known = seen.get(a.app);
-    // "set up" for an app means at least one account of it is.
-    seen.set(a.app, (known || false) || a.needs !== 'setup');
-  }
-  return [...seen.entries()]
-    .map(([app, ready]) => ({app, ready}))
-    .sort((x, y) => (x.ready - y.ready) || x.app.localeCompare(y.app));
+/* Providers with no config at all - what "add" is most obviously for. Zero of
+ * them in the container, where the entrypoint seeds every app, which is why
+ * the button falls back to naming its other use. */
+function addableProviders() {
+  return providerOptions().filter(o => !o.count).map(o => o.app);
+}
+
+/* The account labels this app already has a config file for. What makes a
+ * label unavailable is a file on disk, not a bucket: an account can be
+ * seeded-but-never-used and still own its filename. Offering to create it
+ * was a 409 with no way forward. */
+function existingLabels(app) {
+  return STATE.accounts.filter(a => a.app === app && a.configured)
+                       .map(a => a.account);
 }
 
 function drawAddButton() {
-  const n = unconfigured().length;
+  const n = addableProviders().length;
   $('addsub').textContent = n
-    ? n + ' provider' + (n === 1 ? '' : 's') + ' you have not set up yet'
-    : 'a second person, or a provider you set up elsewhere';
+    ? n + ' provider' + (n === 1 ? '' : 's') + ' with no account yet'
+    : 'a second person on a provider you already have';
   $('add').disabled = !!es;
 }
 
 function openAdder() {
   const sel = $('addapp');
   sel.innerHTML = '';
-  for (const {app, ready} of providerOptions()) {
-    sel.append(new Option(ready ? app + ' (already set up)' : app, app));
+  for (const {app, count} of providerOptions()) {
+    // Factual, and it is the thing that decides what you can type below: a
+    // provider that already has accounts can only be given another, named one.
+    sel.append(new Option(
+      count ? app + ' (' + count + ' account' + (count === 1 ? '' : 's') + ')'
+            : app, app));
   }
   $('adder').hidden = false;
   $('addnote').className = 'adder-note';
@@ -901,18 +988,39 @@ function closeAdder() {
  * Said before the click rather than after: this writes a file. */
 function syncAdderLabel() {
   const app = $('addapp').value;
-  const mine = STATE.accounts.filter(a => a.app === app);
-  const hasPrimary = mine.some(a => a.needs !== 'setup');
+  const taken = existingLabels(app);
   const input = $('addlabel');
-  // A provider with no accounts yet gets `primary`, which is the name the
-  // whole project uses for "the config.json next to the script". A second
-  // account has to be named, so there is nothing to suggest.
-  input.dataset.suggest = hasPrimary ? '' : 'primary';
-  input.placeholder = hasPrimary ? 'e.g. spouse' : 'primary';
-  const label = input.value.trim() || input.dataset.suggest || '<label>';
+  // A provider with no config at all gets `primary`, the name this project
+  // uses for "the config.json next to the script". Where one already exists
+  // the new account has to be named, so there is nothing to suggest.
+  const suggest = taken.includes('primary') ? '' : 'primary';
+  input.dataset.suggest = suggest;
+  input.placeholder = suggest || 'e.g. spouse';
+  const label = input.value.trim() || suggest;
   const note = $('addnote');
   note.className = 'adder-note';
-  if (!hasPrimary) {
+
+  if (label && taken.includes(label)) {
+    // The dead end this replaces: the picker called a seeded provider "not
+    // set up", suggested `primary`, and the server answered 409.
+    const row = STATE.accounts.find(a => a.app === app && a.account === label);
+    note.className = 'adder-note bad';
+    note.innerHTML = '<code>' + escapeHtml(app) + '/' + escapeHtml(label) +
+      '</code> already exists' +
+      (row && !row.used
+        ? ' — it has just never been signed in to. Cancel, press '
+          + '<b>show</b> under the account list, and open it there.'
+        : '. Name a different account.');
+    $('addgo').disabled = true;
+    return;
+  }
+  $('addgo').disabled = false;
+
+  if (!label) {
+    note.textContent = 'Name the account — it becomes the config’s filename.';
+    return;
+  }
+  if (!taken.length) {
     note.innerHTML = 'Copies <code>' + escapeHtml(app) +
       '/config.example.json</code> to its <code>config.json</code>. Nothing ' +
       'is downloaded and nothing is signed in to — the account appears in the ' +

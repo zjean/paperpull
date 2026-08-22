@@ -494,16 +494,33 @@ NEEDS = {
     "due": {"rank": 2, "stamp": "Due",
             "why": "Enough time has passed since the newest document that "
                    "the next one is plausibly there."},
-    # Blocking, but not urgent, and not perishable - so it sits below the
-    # accounts that are actually waiting rather than burying them. On a fresh
-    # checkout this is most of the list.
-    "setup": {"rank": 3, "stamp": "Set up",
-              "why": "There is no config.json for this account yet. Copy the "
-                     "app's config.example.json to config.json and set "
-                     "output_dir. Nothing can run until you do."},
-    "ok": {"rank": 4, "stamp": "Filed",
+    "ok": {"rank": 3, "stamp": "Filed",
            "why": "Nothing to do. Checked recently enough."},
+    # The two the register does not draw. Both mean "this is not an account
+    # you use", and the difference between them is what to do about it.
+    #
+    # `unused` exists because a config file is NOT evidence that anyone set an
+    # account up: the container's entrypoint seeds one for every app in the
+    # image on first run, so a Dutch household with two providers got eighteen
+    # accounts, sixteen of them US banks it will never open - each reported as
+    # a real account, each listed as due, and each offered by Add an account
+    # as "already set up".
+    "unused": {"rank": 4, "stamp": "Never used",
+               "why": "Set up on paper - there is a config.json - but "
+                      "PaperPull has never signed in to this account or "
+                      "downloaded anything for it. In the container every "
+                      "app gets a config whether you want it or not."},
+    "setup": {"rank": 5, "stamp": "Not set up",
+              "why": "There is no config.json for this account yet. Add an "
+                     "account writes one, or copy the app's "
+                     "config.example.json to config.json by hand."},
 }
+
+# Which buckets mean "not an account you use". The register hides these behind
+# one line rather than drawing them; everything else about them is unchanged,
+# and /api/state still reports them so the Add an account picker can tell a
+# provider you have never touched from one you have.
+QUIET = ("unused", "setup")
 
 # Sorts providers that declare no session lifetime after every provider that
 # does - the same rule, and the same reason, as paperpull_core.due._PATIENT:
@@ -512,7 +529,7 @@ NEEDS = {
 _PATIENT = 10 ** 9
 
 
-def _needs(account: dict, gated: bool, due: bool) -> str:
+def _needs(account: dict, gated: bool, due: bool, used: bool) -> str:
     """Which bucket this account is in. One rule, one place.
 
     `due` arrives as a bool from the same due.plan the scheduler and
@@ -522,6 +539,14 @@ def _needs(account: dict, gated: bool, due: bool) -> str:
     only because the page also says, plainly, that it cannot tell what is due
     here. Silently calling everything "Filed" without that sentence would be
     the lie.
+
+    `used` is whether anything has ever happened for this account - see
+    _has_been_used. It is checked LAST of the four, and the order is the whole
+    point: an account that needs a person needs one whether or not it has ever
+    run. The obvious rule ("hide what has never been used") would have hidden
+    the one account this panel's own author was in the middle of setting up,
+    because a freshly configured account has never run by definition. Needing
+    a person outranks having a history.
     """
     if not account.get("configured", True):
         # Ahead of every other test: a sentinel, a session and an identity all
@@ -532,7 +557,28 @@ def _needs(account: dict, gated: bool, due: bool) -> str:
         return "signin"
     if gated and not account["identified"]:
         return "confirm"
+    if not used:
+        return "unused"
     return "due" if due else "ok"
+
+
+def _has_been_used(account: dict, row: dict) -> bool:
+    """Has anything ever actually happened for this account?
+
+    A config file is not evidence of one. The container's entrypoint writes a
+    config.json for every app in the image on its first run, so "a config
+    exists" says only that the image booted once.
+
+    Evidence is any of: a session state or a last-seen-alive timestamp
+    (someone signed in), an adopted identity (someone confirmed the account),
+    or a newest document date (something was downloaded). The first three come
+    from the sentinel and need no core; the last one needs it, which is why
+    this takes both halves and asks for any of them rather than the best one.
+    """
+    return bool(account.get("state") or account.get("last_alive")
+                or account.get("identified")
+                or row.get("newest_document_date")
+                or row.get("last_checked_date"))
 
 
 def _shared_browsers(accounts: list) -> dict:
@@ -600,11 +646,19 @@ def _account_rows(apps: dict, core) -> list:
             key = (app_name, acc["name"])
             row = extra.get(key, {})
             lifetime = row.get("session_lifetime_minutes")
-            needs = _needs(acc, gated, key in due_keys)
+            used = _has_been_used(acc, row)
+            needs = _needs(acc, gated, key in due_keys, used)
             out.append({
                 "app": app_name,
                 "account": acc["name"],
                 "needs": needs,
+                # Both reported, because the Add an account picker needs to
+                # tell "no config at all" from "a config nobody has used" -
+                # the first is a provider to set up, the second is one to sign
+                # in to, and offering to create a config that already exists
+                # is a 409 dead end.
+                "configured": acc["configured"],
+                "used": used,
                 "state": acc["state"],
                 "last_alive": acc["last_alive"],
                 "parked_reason": acc["parked_reason"],
@@ -657,6 +711,7 @@ def api_state():
         "expect_venvs": not remote,
         "actions": _action_text(remote),
         "needs": NEEDS,
+        "quiet": list(QUIET),
         "today": date.today().isoformat(),
         "due_known": core is not None,
         "accounts": _account_rows(apps, core),

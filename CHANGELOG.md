@@ -42,10 +42,16 @@ All notable changes to PaperPull are recorded here. Versioning follows
     so the queue could not be reviewed before it started or read while it ran,
     and `alert()` reported the result. It is now a panel with the queue, where
     it has got to, and the two buttons that drive it.
-  - **Providers you have never set up are out of the register**, and behind a
-    **+ Add an account** button instead. They were seventeen of eighteen rows
-    on a fresh checkout, each reported as a thing wrong with your install, and
-    most of them are providers a given person will never use.
+  - **Only accounts you actually have are in the register.** Providers with no
+    config, and configs nobody has ever used, sit behind one `N not in use ·
+    show` line — on a fresh install that is seventeen of eighteen rows, each
+    otherwise reported as a thing wrong with your setup. **+ Add an account**
+    is the other way in.
+  - **No Due group.** Sorting the list by whether an account is worth running
+    now turned it into a to-do list; `due` and `ok` share one **Ready**
+    heading (named that, rather than "Nothing to do", because a due account is
+    in it). The signal keeps its two honest homes: the masthead's count, and
+    the account's own stamp and highlighted action.
   - **Buttons renamed** to what they do rather than what they pass: Login →
     **Sign in**, Pilot → **Try a few**, Run All → **Download everything new**,
     Discover → **List what is there**, Resume → **Continue last run**, Verify →
@@ -109,6 +115,24 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - `docs/control-panel.png`, a current still of the panel.
 
 ### Fixed
+- **A `config.json` is no longer taken as evidence that anyone set an account
+  up.** The container's entrypoint writes one for every app in the image on its
+  first run, and the panel counted all of them: a household with two providers
+  saw eighteen accounts, sixteen of them US banks it will never open — each
+  listed as due, and each offered by Add an account as "already set up". An
+  account now needs actual evidence (a sign-in, a confirmed identity, or a
+  downloaded document) to count, and one without any is filed under **Never
+  used** and kept out of the register.
+
+  Being new is not on its own grounds for hiding an account: needing a person
+  outranks having a history, so a parked or unconfirmed account stays in the
+  register however fresh it is. The obvious rule would have hidden the very
+  account this change was made while setting up.
+- **Add an account can no longer offer to create a config that already
+  exists.** Each provider is listed with how many accounts it has, and a label
+  that is taken disables Create it and says where to find the account instead
+  — previously the picker called a seeded provider "not set up", suggested
+  `primary`, and the server answered 409 with nothing else to press.
 - **The identity warning no longer has two ways to lie.** `identity_gated` is
   now decided server-side from the app's own accepted flags, so the sixteen
   apps with no identity gate cannot land in the *Needs confirming* bucket, and

@@ -29,18 +29,20 @@ import app as panel  # noqa: E402
 # -- the buckets ------------------------------------------------------------
 
 
-@pytest.mark.parametrize("state,gated,identified,due,expected", [
-    ("parked", False, True, False, "signin"),
-    ("parked", True, False, True, "signin"),    # parked outranks everything
-    ("", True, False, False, "confirm"),
-    ("warm", True, True, True, "due"),
-    ("warm", False, False, True, "due"),
-    ("warm", False, False, False, "ok"),
+@pytest.mark.parametrize("state,gated,identified,due,used,expected", [
+    ("parked", False, True, False, True, "signin"),
+    ("parked", True, False, True, True, "signin"),   # parked outranks all
+    ("", True, False, False, True, "confirm"),
+    ("warm", True, True, True, True, "due"),
+    ("warm", False, False, True, True, "due"),
+    ("warm", False, False, False, True, "ok"),
+    ("", False, False, True, False, "unused"),
 ])
-def test_the_bucket_an_account_lands_in(state, gated, identified, due, expected):
+def test_the_bucket_an_account_lands_in(state, gated, identified, due, used,
+                                        expected):
     assert panel._needs({"configured": True, "state": state,
                          "identified": identified},
-                        gated=gated, due=due) == expected
+                        gated=gated, due=due, used=used) == expected
 
 
 def test_an_unconfigured_account_is_bucketed_ahead_of_every_other_question():
@@ -48,7 +50,68 @@ def test_an_unconfigured_account_is_bucketed_ahead_of_every_other_question():
     output_dir the missing config would have named, so none of them can have
     an answer - see _needs. This account used to read as "Nothing to do"."""
     assert panel._needs({"configured": False, "state": "parked",
-                         "identified": False}, gated=True, due=True) == "setup"
+                         "identified": False}, gated=True, due=True,
+                        used=False) == "setup"
+
+
+# -- a config file is not evidence that anyone set an account up -------------
+#
+# The container's entrypoint writes a config.json for every app in the image on
+# its first run. The panel took that as "eighteen accounts, all set up", so a
+# household with two providers saw sixteen US banks it will never open - each
+# counted as an account, each listed as due, and each offered by Add an account
+# as "already set up".
+
+
+def test_a_seeded_config_nobody_has_touched_is_not_an_account_you_use():
+    assert panel._needs({"configured": True, "state": "", "identified": False},
+                        gated=False, due=True, used=False) == "unused"
+
+
+@pytest.mark.parametrize("account,row", [
+    ({"state": "warm"}, {}),
+    ({"last_alive": "2026-08-20T09:00:00"}, {}),
+    ({"identified": True}, {}),
+    ({}, {"newest_document_date": "2026-07-31"}),
+    ({}, {"last_checked_date": "2026-08-20"}),
+])
+def test_any_evidence_at_all_counts_as_used(account, row):
+    """Signed in, confirmed, or downloaded something - any one of them means
+    somebody meant this account to exist. The first three come off the
+    sentinel and need no core; the last two need it, which is why both halves
+    are asked."""
+    assert panel._has_been_used(account, row) is True
+
+
+def test_a_config_and_nothing_else_is_not_evidence():
+    assert panel._has_been_used({"state": "", "last_alive": "",
+                                 "identified": False}, {}) is False
+
+
+def test_an_account_that_needs_a_person_is_never_hidden_for_being_new():
+    """The ordering that matters, and the obvious rule's bug. "Hide what has
+    never been used" would have hidden the account this very change was made
+    while setting up: a freshly configured account has never run, by
+    definition. Needing a person outranks having a history - so a parked or
+    unconfirmed account stays in the register however new it is."""
+    for state, gated, expected in [("parked", False, "signin"),
+                                   ("", True, "confirm")]:
+        assert panel._needs({"configured": True, "state": state,
+                             "identified": False},
+                            gated=gated, due=False, used=False) == expected
+
+
+def test_the_quiet_buckets_are_named_for_the_page():
+    """The register hides exactly these, and the page reads the list from
+    here rather than keeping its own copy."""
+    assert set(panel.QUIET) == {"unused", "setup"}
+    for name in panel.QUIET:
+        assert name in panel.NEEDS
+    # ...and they sort below everything the register does draw.
+    quiet_ranks = [panel.NEEDS[n]["rank"] for n in panel.QUIET]
+    drawn = [spec["rank"] for name, spec in panel.NEEDS.items()
+             if name not in panel.QUIET]
+    assert min(quiet_ranks) > max(drawn)
 
 
 def test_every_bucket_has_a_stamp_and_a_reason():
@@ -276,9 +339,9 @@ def test_the_anchors_themselves_reach_the_page_not_just_a_boolean():
     against anything."""
     rows = panel._account_rows(
         {"fake": {"supported_actions": ["login", "adopt"], "has_venv": True,
-                  "accounts": [{"name": "primary", "state": "warm",
-                                "last_alive": "", "parked_reason": "",
-                                "identified": True,
+                  "accounts": [{"name": "primary", "configured": True,
+                                "state": "warm", "last_alive": "",
+                                "parked_reason": "", "identified": True,
                                 "anchors": [{"id": "202508-1", "date": "2026-08-14"}]}]}},
         core=None)
     assert rows[0]["anchors"] == [{"id": "202508-1", "date": "2026-08-14"}]
@@ -289,10 +352,12 @@ def test_the_flat_list_keeps_every_account_of_every_app():
     is the whole reason config.<name>.json exists."""
     apps = {
         "one": {"supported_actions": ["login"], "has_venv": True,
-                "accounts": [{"name": "primary", "state": "", "last_alive": "",
+                "accounts": [{"name": "primary", "configured": True,
+                              "state": "", "last_alive": "",
                               "parked_reason": "", "identified": False,
                               "anchors": []},
-                             {"name": "spouse", "state": "", "last_alive": "",
+                             {"name": "spouse", "configured": True,
+                              "state": "", "last_alive": "",
                               "parked_reason": "", "identified": False,
                               "anchors": []}]},
     }

@@ -88,7 +88,8 @@ def _call(fn: str, *args, needs: list = ("identityText",)):
 
 def _account(name="primary", gated=False, identified=False, needs="ok",
              state="", anchors=None, **extra):
-    row = {"app": "provider", "account": name, "needs": needs, "state": state,
+    row = {"app": "provider", "account": name, "needs": needs,
+           "configured": True, "used": True, "state": state,
            "last_alive": "", "parked_reason": "", "identity_gated": gated,
            "identified": identified, "anchors": anchors or [],
            "session_lifetime_minutes": None, "newest_document_date": "",
@@ -108,7 +109,7 @@ def test_an_ungated_app_is_never_told_to_confirm_anything():
     must not land in the bucket whose whole text is "go and confirm it"."""
     assert panel._needs(
         {"configured": True, "state": "", "identified": False},
-        gated=False, due=False) == "ok"
+        gated=False, due=False, used=True) == "ok"
 
 
 def test_an_ungated_apps_identity_line_does_not_send_you_hunting():
@@ -154,7 +155,7 @@ def test_a_gated_apps_unconfirmed_account_is_bucketed_as_needing_confirming():
     real case."""
     assert panel._needs(
         {"configured": True, "state": "", "identified": False},
-        gated=True, due=False) == "confirm"
+        gated=True, due=False, used=True) == "confirm"
 
 
 def test_a_gated_apps_unconfirmed_account_gets_the_real_instruction():
@@ -169,7 +170,7 @@ def test_a_gated_apps_parked_account_is_told_to_sign_in_not_to_confirm():
     sign-in first."""
     assert panel._needs(
         {"configured": True, "state": "parked", "identified": False},
-        gated=True, due=False) == "signin"
+        gated=True, due=False, used=True) == "signin"
 
 
 def test_a_gated_apps_confirmed_account_shows_its_anchors():
