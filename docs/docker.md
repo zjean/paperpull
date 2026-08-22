@@ -299,7 +299,9 @@ Needs you:
 
 One message per pass, sent only when there is something to say — not one push
 per account, and not a daily "all fine" you would learn to ignore within a
-week.
+week. A parked account is reported every pass until you clear it, though: if
+you have stopped using a provider and never sign back in, that account shows
+up in the digest, nightly, indefinitely.
 
 What it will **not** notify about, and why:
 
