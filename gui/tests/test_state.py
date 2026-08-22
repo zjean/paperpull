@@ -212,16 +212,27 @@ def test_the_version_reaches_the_page():
     assert panel.VERSION in panel.index().body.decode()
 
 
-def test_an_edited_page_needs_no_restart():
+def test_an_edited_page_needs_no_restart(tmp_path, monkeypatch):
     """_asset re-reads per request on purpose: the panel is a long-running
-    local process and reloading the tab is the natural way to see a change."""
-    original = (panel.STATIC / "panel.css").read_text(encoding="utf-8")
-    try:
-        (panel.STATIC / "panel.css").write_text(original + "\n/* edited */\n",
-                                                encoding="utf-8")
-        assert "/* edited */" in panel.panel_css().body.decode()
-    finally:
-        (panel.STATIC / "panel.css").write_text(original, encoding="utf-8")
+    local process and reloading the tab is the natural way to see a change.
+
+    Against a temporary directory rather than the shipped file. The first
+    version of this test edited gui/static/panel.css in place and restored it,
+    which passed on a laptop and failed in the image with a PermissionError -
+    /app is read-only there, and NOT writing into the app directories is
+    precisely what lets the container run as whatever uid you like (see
+    _config_root). A test may not be the one thing that needs /app writable.
+
+    Two different contents, not one edit, so this fails if the route ever goes
+    back to serving an import-time snapshot.
+    """
+    monkeypatch.setattr(panel, "STATIC", tmp_path)
+    (tmp_path / "panel.css").write_text("/* first */\n", encoding="utf-8")
+    assert "/* first */" in panel.panel_css().body.decode()
+    (tmp_path / "panel.css").write_text("/* second */\n", encoding="utf-8")
+    body = panel.panel_css().body.decode()
+    assert "/* second */" in body
+    assert "/* first */" not in body
 
 
 def test_the_page_is_not_cached():
