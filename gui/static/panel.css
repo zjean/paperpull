@@ -243,6 +243,16 @@ main {
 .row-note { margin-top: 3px; font-size: 11px; color: var(--vellum-dim); }
 .row-note-signin { color: var(--stamp); }
 .row-note-confirm { color: var(--stamp); }
+.row-flag {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--stamp);
+  border-radius: 2px;
+  color: var(--stamp);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 
 .row-life { color: var(--slate); font-size: 10px; flex: none; }
 
@@ -409,6 +419,12 @@ main {
 .meter-fill { display: block; height: 100%; background: var(--filed); }
 .meter-fill.low { background: var(--brass); }
 .meter-fill.gone { background: var(--stamp); }
+
+/* Vermilion, not brass: a missing .venv makes the next run fail loudly, but
+ * two accounts on one browser make it succeed and file the documents under
+ * the wrong person. */
+.warn-hard { box-shadow: inset 3px 0 0 var(--stamp) !important; }
+.warn-hard b { color: var(--stamp); }
 
 .warn {
   margin: 16px 0 0;

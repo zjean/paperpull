@@ -100,6 +100,34 @@ function identityText(a) {
   return {text: 'This provider does not ask.', gone: false};
 }
 
+/* Two accounts of one provider on one browser, in words.
+ *
+ * Returns null when there is nothing to say, which is the normal case. This is
+ * the one warning on the page about something that does not fail: every app
+ * takes the first live tab whose URL matches the provider, nothing ties that
+ * to a config, and the owner stamped on every document comes from the config
+ * rather than the page - so the run succeeds and files the documents under the
+ * wrong person. An app with an identity gate refuses instead, which is a much
+ * better failure but still a failure, so the fix is the same either way.
+ */
+function sharedBrowserWarning(a) {
+  const others = a.shares_browser_with || [];
+  if (!others.length) return null;
+  const who = others.join(', ');
+  const whose = others.length === 1 ? others[0] + '’s' : 'another account’s';
+  const consequence = a.identity_gated
+    ? 'This app checks which account a tab belongs to, so a run that reads '
+      + 'the wrong one refuses rather than misfiling — but it does refuse.'
+    : 'Nothing here checks which account a tab belongs to, so a run can read '
+      + whose + ' tab and file those documents under this account’s owner, '
+      + 'with nothing on screen saying so.';
+  return 'Shares a browser with ' + who + '. ' + a.app + ' reads the first '
+       + 'tab whose address matches the provider, and nothing ties that to a '
+       + 'config. ' + consequence
+       + ' Give each account its own browser: a different cdp_url port '
+       + 'natively, or a second browser service in Docker.';
+}
+
 /* The one line under a provider's name in the register. */
 function rowNote(a) {
   if (a.needs === 'signin') {
@@ -271,7 +299,17 @@ function rowFor(a) {
   acc.className = 'row-account';
   acc.textContent = a.account;
   top.append(prov, acc);
-  if (a.session_lifetime_minutes !== null && a.session_lifetime_minutes !== undefined) {
+  if ((a.shares_browser_with || []).length) {
+    // Its own marker rather than the note's place: an account can both share
+    // a browser and be parked, and being parked is the thing it can act on
+    // now. The detail view spells this one out.
+    const flag = document.createElement('span');
+    flag.className = 'row-flag';
+    flag.textContent = 'shared browser';
+    flag.title = 'Shares a browser with ' + a.shares_browser_with.join(', ');
+    top.append(flag);
+  } else if (a.session_lifetime_minutes !== null &&
+             a.session_lifetime_minutes !== undefined) {
     const life = document.createElement('span');
     life.className = 'row-life';
     life.textContent = a.session_lifetime_minutes + 'm session';
@@ -325,6 +363,11 @@ function drawDetail() {
 
   $('fnewest').textContent = a.newest_document_date || 'nothing downloaded yet';
   $('flooked').textContent = a.last_checked_date || 'never';
+
+  const shared = $('sharedwarn');
+  const sharedText = sharedBrowserWarning(a);
+  shared.hidden = !sharedText;
+  if (sharedText) shared.textContent = sharedText;
 
   const warn = $('venvwarn');
   warn.hidden = !(STATE.expect_venvs && !a.has_venv);

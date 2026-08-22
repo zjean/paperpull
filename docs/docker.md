@@ -125,7 +125,20 @@ For a second person's accounts, add a second `browser` service with its own
 `/config` volume and its own bridge port, and point that account's
 `config.<name>.json` at it. Drop the file into `./config/<app>/` and the panel
 offers that account immediately — it reads the directory on each request, so no
-restart is needed.
+restart is needed. The panel's **+ Add an account** writes that file for you,
+with its own output folder, but it cannot point it at a browser that does not
+exist yet: it leaves `cdp_url` on the shared one and says so.
+
+That second browser is not optional for two accounts of **one** provider. Each
+app finds its tab by matching the provider's host and takes the first one
+(`simyo_site.find_signed_in_page`; `amex_docs`' `amex[0] if amex else …`), and
+nothing ties that choice to a config — while the account holder stamped on
+every PDF and CSV row comes from the config file, never from the page. So with
+both accounts signed in to this one Chrome, a run can read the other account's
+tab and file its documents under the wrong person. `simyo` and `youfone` catch
+it (the identity gate below refuses rather than misfiling); the other sixteen
+apps do not check. The panel marks any account that shares a browser with
+another account of the same provider, in the register and on the account.
 
 ### First run after upgrading: adopt each account's identity
 

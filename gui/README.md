@@ -56,6 +56,38 @@ The label becomes a filename, so it is refused rather than rewritten: 1–32
 characters of lowercase `a-z`, `0-9`, `-` or `_`. An existing config is never
 overwritten.
 
+### Two accounts of one provider, and finding the right tab
+
+Worth knowing, because nothing outside the panel warns about it.
+
+Every app finds its tab the same way: **the first live tab whose address
+matches the provider's host** (`simyo_site.find_signed_in_page`, `amex_docs`'
+`amex[0] if amex else …`, and the same shape in all eighteen). Nothing ties
+that choice to a config. And the account holder stamped on every PDF and every
+index-CSV row comes from the config file, never from the page
+(`storage.ensure_owner`) — so a run that reads the wrong tab files those
+documents under the wrong person.
+
+- **Natively this cannot happen by accident.** Each account gets its own
+  `profile_dir` on its own `cdp_url` port, so each has its own browser with its
+  own cookie jar, and only one account of a provider is ever signed in per
+  browser. "The first matching tab" has exactly one candidate. That is what the
+  port stepping in Add an account is for.
+- **In Docker it is the default,** because there is one Chrome and every app's
+  `cdp_url` points at it. For two *different* providers that is fine and
+  intended — different hosts, different tabs. For two accounts of *one*
+  provider it is not: `simyo` and `youfone` catch it (the identity gate refuses
+  rather than misfiling), and the other sixteen apps do not check at all. The
+  fix is a second `browser` service with its own bridge port, with that
+  account's `config.<name>.json` pointing at it — see
+  [docs/docker.md](../docs/docker.md), *One shared browser*.
+
+The panel flags it either way: any account sharing a browser with another
+account of the same provider gets a **shared browser** marker in the register
+and the whole explanation on the account itself. It is the one warning here
+about something that does not fail — the run succeeds, which is what makes it
+worth a warning.
+
 **Start a sitting** walks every account whose session is too perishable for
 the scheduler to catch alive, one at a time, most perishable first: it asks
 you to sign in, waits, runs, tears down, then asks about the next one. The

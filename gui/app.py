@@ -306,6 +306,23 @@ def _account_names(app_dir: Path):
     return names
 
 
+def _config_of(app_dir: Path, account: str) -> dict:
+    """This account's config as parsed JSON, or {} if there is none.
+
+    A second small read of a file _sentinel_for also opens. Kept separate
+    rather than threaded through it because _sentinel_for's whole job is to
+    answer "nothing known" for anything it cannot read, and an unreadable
+    config has to mean that there too - two callers, two independent failures,
+    neither able to break the other.
+    """
+    try:
+        cfg = json.loads(_config_path(app_dir, account)
+                         .read_text(encoding="utf-8-sig"))
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
 def _sentinel_for(app_dir: Path, account: str) -> dict:
     """This account's sentinel record, or {} if there is none yet.
 
@@ -360,6 +377,10 @@ def _accounts(app_dir: Path):
             # of true. `output_dir` alone decides where documents land, so
             # there is nothing to fall back on.
             "configured": _config_path(app_dir, name).is_file(),
+            # Which browser this account attaches to. Not shown - it is only
+            # ever compared with the other accounts of the same app, in
+            # _account_rows, to catch two of them pointing at one browser.
+            "cdp_url": str(_config_of(app_dir, name).get("cdp_url") or "").strip(),
             "state": session.get("state", ""),
             "last_alive": session.get("last_verified_alive", ""),
             "parked_reason": session.get("parked_reason", ""),
@@ -514,6 +535,42 @@ def _needs(account: dict, gated: bool, due: bool) -> str:
     return "due" if due else "ok"
 
 
+def _shared_browsers(accounts: list) -> dict:
+    """account label -> the other accounts of this app on the same browser.
+
+    Every app finds its tab the same way: the first live page whose URL
+    matches the provider's host (simyo_site.find_signed_in_page,
+    amex_docs' `amex[0] if amex else ...`, and so on for all eighteen).
+    Nothing ties that choice to a config, so with two accounts of ONE provider
+    signed in to ONE browser a run can read the other account's tab - and the
+    owner stamped on every PDF and every CSV row comes from the config file,
+    never from the page (storage.ensure_owner). The documents would be filed
+    under the wrong person with nothing on screen saying so.
+
+    paperpull_core.identity exists for exactly this and catches it, but only
+    on the two apps whose entry script accepts --adopt-identity; on the other
+    sixteen nothing checks at all.
+
+    Natively this cannot happen by accident - each account gets its own
+    profile on its own port, which is what add_account.py and this panel's own
+    Add an account both arrange. In the container it is the default: there is
+    one browser and every app's cdp_url points at it on purpose, which is
+    right for two different providers (different hosts, different tabs) and
+    wrong for two accounts of one provider.
+
+    An empty cdp_url is not a match with anything: it means this account
+    launches its own browser rather than attaching to a shared one.
+    """
+    by_url = {}
+    for acc in accounts:
+        url = acc.get("cdp_url") or ""
+        if url:
+            by_url.setdefault(url, []).append(acc["name"])
+    return {name: [n for n in names if n != name]
+            for names in by_url.values() if len(names) > 1
+            for name in names}
+
+
 def _account_rows(apps: dict, core) -> list:
     """Every app/account pair as one flat, ordered list for the page.
 
@@ -538,6 +595,7 @@ def _account_rows(apps: dict, core) -> list:
     out = []
     for app_name, meta in apps.items():
         gated = "adopt" in meta["supported_actions"]
+        shared = _shared_browsers(meta["accounts"])
         for acc in meta["accounts"]:
             key = (app_name, acc["name"])
             row = extra.get(key, {})
@@ -559,6 +617,10 @@ def _account_rows(apps: dict, core) -> list:
                 "session_lifetime_minutes": lifetime,
                 "newest_document_date": row.get("newest_document_date", ""),
                 "last_checked_date": row.get("last_checked_date", ""),
+                # The other accounts of this app that attach to the same
+                # browser this one does - see _shared_browsers. Empty is the
+                # normal, safe case.
+                "shares_browser_with": shared.get(acc["name"], []),
                 "supported_actions": meta["supported_actions"],
                 "has_venv": meta["has_venv"],
             })

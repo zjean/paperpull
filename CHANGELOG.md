@@ -82,8 +82,21 @@ All notable changes to PaperPull are recorded here. Versioning follows
   than rewritten (lowercase `[a-z0-9_-]`, 1–32 chars — `config.Spouse.json` and
   `config.spouse.json` are one file on macOS and two on Linux), and an existing
   config is never overwritten.
-- **`gui/tests/test_add_account.py`** — 40 tests over that route: every refusal,
-  and every field it derives.
+- **A warning when two accounts of one provider share a browser.** Nothing
+  anywhere warned about this before — not the apps, not the scheduler, not the
+  panel. Every app finds its tab by matching the provider's host and takes the
+  first one, nothing ties that choice to a config, and the account holder
+  stamped on every PDF and CSV row comes from the config rather than the page —
+  so a run that reads the wrong tab files those documents under the wrong
+  person. `simyo` and `youfone` catch it (`paperpull_core.identity` refuses);
+  the other sixteen apps do not check. Natively it cannot happen by accident,
+  because every account gets its own browser on its own port; in the container
+  it is the default. `/api/state` now reports, per account, which other
+  accounts of the same app attach to the same browser, and the page marks them
+  in the register and explains it on the account. Two *different* providers on
+  one browser is the intended container layout and is not flagged.
+- **`gui/tests/test_add_account.py`** — 45 tests over that route: every refusal,
+  every field it derives, and the shared-browser detection in both directions.
 - **`gui/tests/test_state.py`** — the buckets, the ordering, the degraded
   no-core case, the page's own files, and a test that no action can ship as a
   bare verb with no sentence explaining it. That last one is the regression

@@ -320,3 +320,119 @@ def test_it_is_the_only_route_that_writes():
     posts = sorted(getattr(r, "path", "") for r in panel.app.routes
                    if "POST" in (getattr(r, "methods", None) or set()))
     assert posts == ["/api/accounts", "/api/answer", "/api/stop"]
+
+
+# -- two accounts of one provider on one browser ----------------------------
+#
+# The question this whole feature raises, and the answer is not "it is fine".
+# Every app finds its tab the same way - the first live page whose URL matches
+# the provider's host (simyo_site.find_signed_in_page; amex_docs' `amex[0] if
+# amex else ...`; the same shape in all eighteen) - and nothing ties that
+# choice to a config. The owner stamped on every PDF and every CSV row comes
+# from the config file, never from the page (storage.ensure_owner), so a run
+# that reads the other account's tab files those documents under the wrong
+# person and says nothing.
+#
+# paperpull_core.identity exists for exactly this, but only two of eighteen
+# apps accept --adopt-identity; on the other sixteen nothing checks.
+#
+# So: natively this must not be possible by accident, and where it IS the
+# default - the container's one shared browser - the panel has to say so.
+
+
+def test_the_adder_never_puts_two_accounts_of_one_app_on_one_browser(apps_root):
+    """The native guarantee, stated as a test rather than left to the port
+    arithmetic: whatever else changes about how a new config is derived, two
+    accounts of one provider must not end up attached to one browser, because
+    that is the case nothing downstream can detect."""
+    _add({"app": "acme", "account": "primary"})
+    _add({"app": "acme", "account": "spouse"})
+    _add({"app": "acme", "account": "child"})
+    rows = [a for a in panel.api_state()["accounts"] if a["app"] == "acme"]
+    assert len(rows) == 3
+    for row in rows:
+        assert row["shares_browser_with"] == [], row
+
+
+def test_two_accounts_on_one_browser_are_reported(apps_root):
+    """The container's default, and what a hand-edited config can also do.
+    Nothing anywhere warned about this before - not the apps, not the
+    scheduler, not the panel."""
+    _add({"app": "acme", "account": "primary"})
+    spouse = _add({"app": "acme", "account": "spouse"})["config"]
+    cfg = _read(spouse)
+    cfg["cdp_url"] = EXAMPLE["cdp_url"]          # back onto primary's browser
+    Path(spouse).write_text(json.dumps(cfg), encoding="utf-8")
+
+    rows = {a["account"]: a for a in panel.api_state()["accounts"]
+            if a["app"] == "acme"}
+    assert rows["primary"]["shares_browser_with"] == ["spouse"]
+    assert rows["spouse"]["shares_browser_with"] == ["primary"]
+
+
+def test_three_accounts_on_one_browser_each_name_the_other_two(apps_root):
+    _add({"app": "acme", "account": "primary"})
+    for label in ("spouse", "child"):
+        path = _add({"app": "acme", "account": label})["config"]
+        cfg = _read(path)
+        cfg["cdp_url"] = EXAMPLE["cdp_url"]
+        Path(path).write_text(json.dumps(cfg), encoding="utf-8")
+    rows = {a["account"]: a for a in panel.api_state()["accounts"]
+            if a["app"] == "acme"}
+    assert sorted(rows["primary"]["shares_browser_with"]) == ["child", "spouse"]
+    assert sorted(rows["child"]["shares_browser_with"]) == ["primary", "spouse"]
+
+
+def test_an_account_with_no_cdp_url_shares_with_nobody(apps_root):
+    """An empty cdp_url means this account launches its own browser rather
+    than attaching to a shared one, so it cannot be reading anyone else's tab.
+    Two of them are not "both on the same browser"."""
+    for label in ("primary", "spouse"):
+        _add({"app": "acme", "account": label})
+    for label in ("primary", "spouse"):
+        path = panel._config_path(apps_root, label)
+        cfg = _read(path)
+        cfg.pop("cdp_url", None)
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+    rows = [a for a in panel.api_state()["accounts"] if a["app"] == "acme"]
+    assert all(a["shares_browser_with"] == [] for a in rows)
+
+
+def test_two_different_providers_on_one_browser_is_not_a_problem(tmp_path,
+                                                                monkeypatch):
+    """The container's actual design: one Chrome holds every provider's
+    session, and each app finds its own tab by host. Two hosts, two tabs, no
+    ambiguity - flagging that would cry wolf on every account in the image."""
+    root = tmp_path / "apps"
+    for name in ("acme", "other"):
+        d = root / name
+        d.mkdir(parents=True)
+        (d / f"{name}_docs.py").write_text("# --pilot --all --yes\n",
+                                           encoding="utf-8")
+        (d / "config.example.json").write_text(json.dumps(EXAMPLE),
+                                               encoding="utf-8")
+    monkeypatch.setattr(panel, "APPS_ROOT", root)
+    monkeypatch.delenv("PAPERPULL_CONFIG_ROOT", raising=False)
+    _add({"app": "acme", "account": "primary"})
+    _add({"app": "other", "account": "primary"})
+    rows = panel.api_state()["accounts"]
+    assert len(rows) == 2
+    assert all(a["shares_browser_with"] == [] for a in rows), \
+        "two providers sharing one browser is the intended Docker layout"
+
+
+def test_the_container_layout_is_where_this_actually_bites(apps_root,
+                                                           monkeypatch,
+                                                           tmp_path):
+    """End to end on the case the adder itself creates: with one shared
+    browser it deliberately does not step the port (there is only one browser
+    to point at), so the account it writes DOES share - and the panel says so
+    rather than leaving it to be discovered from misfiled PDFs."""
+    root = tmp_path / "config"
+    (root / "acme").mkdir(parents=True)
+    monkeypatch.setenv("PAPERPULL_CONFIG_ROOT", str(root))
+    _add({"app": "acme", "account": "primary"})
+    out = _add({"app": "acme", "account": "spouse"})
+    assert out["shared_browser"] is True
+    rows = {a["account"]: a for a in panel.api_state()["accounts"]}
+    assert rows["spouse"]["shares_browser_with"] == ["primary"]

@@ -160,9 +160,9 @@ def test_an_account_with_no_sentinel_yet_reports_nothing_known(fake_app):
     _write_config(fake_app, fake_app / "out")
 
     rec = _primary(panel._accounts(fake_app))
-    assert rec == {"name": "primary", "configured": True, "state": "",
-                   "last_alive": "", "parked_reason": "", "identified": False,
-                   "anchors": []}
+    assert rec == {"name": "primary", "configured": True, "cdp_url": "",
+                   "state": "", "last_alive": "", "parked_reason": "",
+                   "identified": False, "anchors": []}
 
 
 # -- /api/due: ordering -----------------------------------------------------
