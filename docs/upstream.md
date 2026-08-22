@@ -51,9 +51,25 @@ docker compose up -d && docker compose exec -T paperpull python /app/tools/docke
 Upstream never touches `docker/browser/` — that image is linuxserver/chrome plus
 a socat service and contains no PaperPull code — so a merge cannot break it.
 
-A `.github/workflows/upstream-watch.yml` run every Monday opens an issue
-labelled `upstream` when there is something to pull, and says up front whether
-any file changed on both sides.
+## The watcher, and why it may be silent
+
+`.github/workflows/upstream-watch.yml` runs the same scan script the skill does
+— `.claude/skills/merge-upstream/scripts/upstream_scan.sh` — writes the report
+to the run summary, and files it as an issue labelled `upstream`.
+
+Two things can make it produce nothing, and neither is a bug in the workflow:
+
+- **A `schedule:` only fires from the repository's default branch.** These
+  workflows live on `develop`; the default branch is `main`, which has no
+  `.github/workflows/` directory at all. So the Monday cron does not run, and
+  the workflow does not even appear in the Actions UI. It starts working the
+  moment `develop` is promoted to `main` — or immediately, if the default
+  branch is switched to `develop`. Until then, use `workflow_dispatch` from
+  `develop`, or just run the skill locally.
+- **Issues can be switched off on a fork**, and they currently are here. The
+  workflow checks `has_issues` first and warns instead of failing, so the scan
+  still lands in the run summary. Settings → General → Features to turn them
+  back on.
 
 ## Resolving conflicts
 

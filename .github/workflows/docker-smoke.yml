@@ -14,7 +14,10 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
   push:
-    branches: [main]
+    # develop too, not just main: these workflows only exist on develop, so a
+    # main-only trigger meant the stack was never smoke-tested before the very
+    # promotion that was supposed to be gated on it.
+    branches: [main, develop]
     paths:
       - Dockerfile
       - docker-compose.yml

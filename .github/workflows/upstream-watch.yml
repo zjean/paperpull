@@ -1,17 +1,32 @@
 # Watch rheeloaded/paperpull for work worth pulling down.
 #
-# This is a fork that adds Docker. It keeps that divergence deliberately small
-# — provider fixes and core changes should merge cleanly — so the useful signal
-# is not "upstream moved" but "upstream moved in a file we also changed".
+# This is a fork that adds Docker: the panel as a web UI, the sign-in browser
+# in its own container, and a scheduler. It keeps its divergence deliberately
+# small — provider fixes should merge cleanly — so the useful signal is not
+# "upstream moved" but "upstream moved somewhere that costs us something".
 #
-# The set of diverged files is computed, never hand-maintained: a list in a
-# file goes stale the first time someone forgets it.
+# The report is produced by the merge-upstream skill's own scan script, so this
+# workflow and a human running the skill locally see exactly the same facts.
+# Nothing here is hand-maintained: a list of "files we changed" in a file goes
+# stale the first time somebody forgets it.
+#
+# NOTE: a `schedule:` only fires from the repository's DEFAULT branch. While
+# these workflows live on `develop` and `main` is the default, the Monday run
+# below never happens — the push trigger and workflow_dispatch are what
+# actually exercise it. See docs/upstream.md.
 name: upstream watch
 
 on:
   schedule:
     - cron: "0 7 * * 1"
   workflow_dispatch:
+  # So a change to the watcher, or to the scan it delegates to, is exercised
+  # rather than discovered on some future Monday.
+  push:
+    branches: [main, develop]
+    paths:
+      - .github/workflows/upstream-watch.yml
+      - .claude/skills/merge-upstream/scripts/upstream_scan.sh
 
 permissions:
   contents: read
@@ -20,6 +35,7 @@ permissions:
 env:
   UPSTREAM: https://github.com/rheeloaded/paperpull.git
   UPSTREAM_BRANCH: main
+  SCAN: .claude/skills/merge-upstream/scripts/upstream_scan.sh
 
 jobs:
   watch:
@@ -34,58 +50,75 @@ jobs:
           git remote add upstream "$UPSTREAM" 2>/dev/null || true
           git fetch --no-tags upstream "$UPSTREAM_BRANCH"
 
-      - name: What is new, and does it touch anything we changed?
-        id: scan
+      - name: How much is waiting?
+        id: count
         run: |
           base=$(git merge-base HEAD "upstream/${UPSTREAM_BRANCH}")
-          new=$(git rev-list --count "${base}..upstream/${UPSTREAM_BRANCH}")
-          echo "new_commits=${new}" >> "$GITHUB_OUTPUT"
+          echo "new_commits=$(git rev-list --count "${base}..upstream/${UPSTREAM_BRANCH}")" \
+            >> "$GITHUB_OUTPUT"
 
-          if [ "$new" = "0" ]; then
-            echo "Up to date with upstream."
-            exit 0
+      - name: Scan, the same way the skill does
+        if: steps.count.outputs.new_commits != '0'
+        run: |
+          if [ -x "$SCAN" ] || [ -f "$SCAN" ]; then
+            bash "$SCAN" "upstream/${UPSTREAM_BRANCH}" > body.md
+          else
+            # The script is the source of truth, but a watcher that dies
+            # because someone moved a file is worse than a thin report.
+            base=$(git merge-base HEAD "upstream/${UPSTREAM_BRANCH}")
+            {
+              echo "# Upstream scan (fallback — \`$SCAN\` not found)"
+              echo
+              git log --no-merges --pretty='- %h %s' \
+                "${base}..upstream/${UPSTREAM_BRANCH}" | head -50
+              echo
+              echo "## Files changed on both sides"
+              echo
+              comm -12 <(git diff --name-only "${base}..HEAD" | sort -u) \
+                       <(git diff --name-only "${base}..upstream/${UPSTREAM_BRANCH}" | sort -u) \
+                | sed 's/^/- `/;s/$/`/'
+            } > body.md
           fi
 
-          # Files this fork has changed since the common ancestor...
-          git diff --name-only "${base}..HEAD" | sort -u > ours.txt
-          # ...and files upstream has changed since it.
-          git diff --name-only "${base}..upstream/${UPSTREAM_BRANCH}" | sort -u > theirs.txt
-          comm -12 ours.txt theirs.txt > overlap.txt
-
-          echo "overlap=$(wc -l < overlap.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
-
           {
-            echo "**${new}** new upstream commit(s) on \`${UPSTREAM_BRANCH}\`."
             echo
-            if [ -s overlap.txt ]; then
-              echo "⚠️ These files changed on **both** sides, so the merge will need a decision:"
-              echo
-              while read -r f; do echo "- \`${f}\`"; done < overlap.txt
-              echo
-            else
-              echo "✅ No file changed on both sides — this should merge cleanly."
-              echo
-            fi
-            echo "<details><summary>Upstream commits</summary>"
+            echo "---"
             echo
-            git log --no-merges --pretty='- %h %s' "${base}..upstream/${UPSTREAM_BRANCH}" | head -50
-            echo
-            echo "</details>"
-            echo
-            echo "To merge: run the \`merge-upstream\` skill in Claude Code, or see \`docs/upstream.md\`."
-          } > body.md
+            echo "Run the \`merge-upstream\` skill in Claude Code to act on this — it"
+            echo "re-runs this scan, assesses what each item costs the container, the"
+            echo "panel and the scheduler, merges, and reports the gaps worth deciding."
+            echo "By hand: \`docs/upstream.md\`."
+          } >> body.md
+
+          # The summary is written whether or not an issue can be opened, so the
+          # report is never lost to a repository setting.
+          cat body.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Up to date
+        if: steps.count.outputs.new_commits == '0'
+        run: echo "No new upstream commits." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Open or update the tracking issue
-        if: steps.scan.outputs.new_commits != '0'
+        if: steps.count.outputs.new_commits != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          title="Upstream has ${{ steps.scan.outputs.new_commits }} new commit(s)"
+          # Issues can be switched off on a fork, and this whole step then fails
+          # with "Issues are disabled for this repo" — burying a report that had
+          # already been written to the step summary above. So ask first.
+          if [ "$(gh api "repos/${GITHUB_REPOSITORY}" --jq .has_issues)" != "true" ]; then
+            echo "::warning::Issues are disabled on ${GITHUB_REPOSITORY}, so there is" \
+                 "nowhere to file this. The scan is in the run summary. Enable Issues" \
+                 "in Settings → General → Features to get a tracked one."
+            exit 0
+          fi
+
+          title="Upstream has ${{ steps.count.outputs.new_commits }} new commit(s)"
           existing=$(gh issue list --label upstream --state open \
                        --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
             gh issue edit "$existing" --title "$title" --body-file body.md
-            echo "updated issue #${existing}"
+            echo "updated issue #${existing}" >> "$GITHUB_STEP_SUMMARY"
           else
             gh label create upstream --color ededed \
               --description "Changes waiting to be merged from rheeloaded/paperpull" 2>/dev/null || true
