@@ -115,6 +115,43 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - `docs/control-panel.png`, a current still of the panel.
 
 ### Fixed
+- **Updating PaperPull no longer signs you out of every provider.** `docker
+  compose pull && docker compose up -d` — what the README and docs both told you
+  to run — pulls the *browser* image as well, which tracks
+  `linuxserver/chrome:latest` and rebuilds weekly. So most weeks an ordinary
+  update recreated that container, and restarting Chrome was the one thing in
+  this stack that could cost a session.
+
+  It cost every session, because of a Chrome behaviour nothing here accounted
+  for: a provider login is usually a cookie with no expiry, and Chrome drops
+  those on exit unless **On startup** is set to *Continue where you left off* —
+  the setting that also loads the previous session's cookies back in. Chrome's
+  default is the New Tab page. The profile volume survived every restart
+  perfectly and told the sites nothing; `Default/Cookies` was never even
+  written to.
+
+  Three changes, none of which need a person to remember anything:
+
+  - The browser image ships a **recommended** Chrome policy setting
+    `RestoreOnStartup` to restore the last session, so a fresh profile — and
+    any profile whose owner never touched the setting — keeps its cookies and
+    its tabs across a restart. Recommended, so **Settings → On startup** still
+    switches; policy rather than a seeded `Default/Preferences`, because
+    `session.restore_on_startup` is one of Chrome's tracked preferences and a
+    value written from outside the browser is silently reset.
+    `--restore-last-session` in `CHROME_CLI` covers the same ground after an
+    unclean exit.
+  - **`stop_grace_period: 30s` on the browser.** Compose's default 10s is not
+    enough for s6 to bring the desktop and Chrome down in order, so Chrome was
+    being SIGKILLed with its session unflushed — visible as
+    `profile.exit_type: "Crashed"` in the profile, on a container that had been
+    stopped politely.
+  - **The documented update command names its services**
+    (`docker compose pull paperpull scheduler && docker compose up -d paperpull
+    scheduler`), because the panel and the scheduler are what change when
+    PaperPull changes. `depends_on` starts a stopped browser but never
+    recreates a running one, so the session is left alone. Updating the browser
+    deliberately — for a new Chrome — is its own line, in its own section.
 - **A `config.json` is no longer taken as evidence that anyone set an account
   up.** The container's entrypoint writes one for every app in the image on its
   first run, and the panel counted all of them: a household with two providers

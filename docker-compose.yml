@@ -11,7 +11,7 @@
 #
 # Nothing is published. Both web UIs go through your reverse proxy — see
 # docker/Caddyfile.example. Read docs/docker.md before the first run; the
-# design here is dictated by four non-obvious Chrome and Playwright
+# design here is dictated by five non-obvious Chrome and Playwright
 # behaviours, and the comments below say which is which.
 name: paperpull
 
@@ -53,10 +53,17 @@ services:
       # no DevToolsActivePort, the port simply never opens. linuxserver's
       # wrapper passes a bare valueless --user-data-dir, so ours has to
       # override it. Removing this line breaks everything, quietly.
+      #
+      # --restore-last-session reopens the tabs after Chrome itself restarts —
+      # a crash, or a container recreate. The startup *preference* that keeps
+      # session cookies across an exit is set by a recommended policy in the
+      # image (see docker/browser/Dockerfile); this is the other half, and the
+      # part that survives an unclean exit.
       CHROME_CLI: >-
         --user-data-dir=/config/pp-profile
         --remote-debugging-port=9222
         --remote-allow-origins=*
+        --restore-last-session
     volumes:
       # Your signed-in profile. Back this up; losing it means signing in to
       # every provider again. It holds live session cookies — treat it as
@@ -68,6 +75,13 @@ services:
       # download.save_as() reports success and writes a zero-byte file.
       - pw-artifacts:/pwtmp
     networks: [internal, proxy]
+    # Compose's default is 10s, which is not enough for s6 to bring the desktop
+    # and Chrome down in order. Chrome then dies on SIGKILL with its session
+    # unflushed: the profile is marked `exit_type: Crashed`, and the session
+    # cookies that hold most of your logins were never written. A stopped
+    # container that took four seconds longer costs nothing; signing in to
+    # every provider again costs an evening.
+    stop_grace_period: 30s
     restart: unless-stopped
 
   paperpull:

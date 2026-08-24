@@ -268,8 +268,12 @@ docker compose exec paperpull python /app/tools/docker_smoke.py
 
 ```bash
 docker compose logs -f paperpull            # what a run is doing
-docker compose pull && docker compose up -d # update
 docker compose restart browser              # that's all — nothing else needs it
+
+# Update the panel and the scheduler. Naming them is the point: a bare
+# `compose pull` also pulls a new browser image, and `up -d` then restarts
+# Chrome — see docs/docker.md, "Updating without signing in again".
+docker compose pull paperpull scheduler && docker compose up -d paperpull scheduler
 ```
 
 Rolling back is why every build also gets a `:sha-<short>` tag — put one in

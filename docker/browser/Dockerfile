@@ -23,6 +23,22 @@ COPY s6/svc-cdp-bridge/ /etc/s6-overlay/s6-rc.d/svc-cdp-bridge/
 # An empty file here is how s6-rc is told to bring the service up with the rest.
 COPY s6-enable/ /etc/s6-overlay/s6-rc.d/user/contents.d/
 
+# "Continue where you left off", as a default rather than a thing to remember.
+#
+# Chrome throws away every *session* cookie when it exits, unless the startup
+# preference says to restore the last session — and most providers here keep
+# their login in exactly those. Left at Chrome's default ("open the New Tab
+# page"), any restart of this container means signing in to everything again,
+# even though the profile volume survived intact.
+#
+# `recommended/`, not `managed/`: this sets the default for a fresh profile and
+# for anyone who has never touched the setting, while leaving Settings → On
+# startup switchable. A managed policy would grey it out. Policy is used rather
+# than seeding `Default/Preferences`, because `session.restore_on_startup` is
+# one of Chrome's *tracked* preferences: written from outside, Chrome sees a
+# preference whose MAC does not match and silently resets it.
+COPY policies/ /etc/opt/chrome/policies/
+
 # Runs during init, before the desktop starts Chrome. See the script for why a
 # persisted Chrome profile otherwise stops opening after a container recreate.
 COPY custom-cont-init.d/ /custom-cont-init.d/

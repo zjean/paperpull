@@ -341,6 +341,37 @@ The panel's socat resolves `browser` per connection, so it reconnects on its
 own. Your signed-in sessions survive, because they live in the Chrome profile on
 `./browser-profile`, not in the container.
 
+### Updating without signing in again
+
+```bash
+docker compose pull paperpull scheduler && docker compose up -d paperpull scheduler
+```
+
+Name the services. A bare `docker compose pull` also pulls the browser image —
+which tracks `linuxserver/chrome:latest` and rebuilds weekly, so most weeks
+there is a new one — and `up -d` then recreates that container to use it.
+That restarts Chrome, and restarting Chrome is the one thing in this stack that
+can cost you your sessions.
+
+The panel and the scheduler are what actually change when PaperPull changes.
+Updating those two leaves the browser running and untouched: `depends_on` starts
+a stopped browser, it never recreates a running one.
+
+The browser image is worth updating too — it is how you get new Chrome
+releases — just do it deliberately, when signing back in is not a nuisance:
+
+```bash
+docker compose pull browser && docker compose up -d browser
+```
+
+Two things make that survivable rather than expensive, and both are in the
+stack already: the profile is set to restore the last session, so session
+cookies and tabs come back (see [gotcha 6](#6-chrome-throws-away-session-cookies-unless-you-tell-it-to-restore)),
+and `stop_grace_period: 30s` gives Chrome long enough to write them down before
+it goes. The two providers whose token lives in the tab rather than in a cookie
+— Simyo and Youfone — may still want a fresh sign-in; a run that finds one of
+those parks and says so.
+
 ### Verify it works
 
 ```bash
@@ -350,7 +381,7 @@ docker compose exec paperpull python /app/tools/docker_smoke.py
 Four checks, ending with a real download across the container boundary. Run it
 after any change to the compose file, and after merging upstream.
 
-## Five things Chrome and Playwright do that shape all of this
+## Six things Chrome and Playwright do that shape all of this
 
 Each of these was found the hard way, and each fails *silently*. If you change
 the compose file or the Dockerfile, this is the list to check against.
@@ -443,13 +474,44 @@ does the right thing. The browser image also clears a lock naming a *different*
 host at init, so if that pin is ever removed the failure is a log line rather
 than silence.
 
+### 6. Chrome throws away session cookies unless you tell it to restore
+
+A provider login is usually a *session* cookie: one with no expiry, which Chrome
+is meant to drop when the browser closes. It drops them on exit no matter how
+carefully the profile is persisted — unless **On startup** is set to *Continue
+where you left off*, which is the setting that also tells Chrome's cookie store
+to load the previous session's cookies back in.
+
+Chrome's default is *Open the New Tab page*. On that default, every restart of
+the browser container is a sign-in to every provider again, with a fully intact
+`./browser-profile` on disk and a `Cookies` file whose modification time never
+moved. Nothing reports it; the sites simply do not know you.
+
+The browser image therefore ships a *recommended* Chrome policy setting
+`RestoreOnStartup` to "restore the last session"
+(`docker/browser/policies/recommended/paperpull.json`). Recommended rather than
+managed, so **Settings → On startup** still switches; policy rather than a
+seeded `Default/Preferences`, because `session.restore_on_startup` is one of
+Chrome's tracked preferences and a value written from outside the browser is
+silently reset. `--restore-last-session` in `CHROME_CLI` covers the same ground
+after an unclean exit.
+
+Two checks, on the host, worth knowing about:
+
+```bash
+# has anything been written to the cookie jar since you signed in?
+ls -l browser-profile/pp-profile/Default/Cookies
+# did Chrome shut down cleanly last time? ("Crashed" means it was SIGKILLed)
+python3 -c "import json;print(json.load(open('browser-profile/pp-profile/Default/Preferences'))['profile']['exit_type'])"
+```
+
 ## Operating it
 
 | | |
 |---|---|
 | Logs | `docker compose logs -f paperpull` |
 | One-off run | `docker compose run --rm paperpull python apps/ally/ally_docs.py --discover` |
-| Update | `docker compose pull && docker compose up -d` |
+| Update | `docker compose pull paperpull scheduler && docker compose up -d paperpull scheduler` — named services on purpose, see [Updating](#updating-without-signing-in-again) |
 | Restart the browser | `docker compose restart browser` |
 | Tests | `docker compose exec paperpull python -m pytest core/tests gui/tests -q -p no:cacheprovider` |
 
