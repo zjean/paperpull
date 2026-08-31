@@ -586,7 +586,7 @@ def _shared_browsers(accounts: list) -> dict:
 
     Every app finds its tab the same way: the first live page whose URL
     matches the provider's host (simyo_site.find_signed_in_page,
-    amex_docs' `amex[0] if amex else ...`, and so on for all eighteen).
+    amex_docs' `amex[0] if amex else ...`, and so on for all twenty-three).
     Nothing ties that choice to a config, so with two accounts of ONE provider
     signed in to ONE browser a run can read the other account's tab - and the
     owner stamped on every PDF and every CSV row comes from the config file,
@@ -595,7 +595,7 @@ def _shared_browsers(accounts: list) -> dict:
 
     paperpull_core.identity exists for exactly this and catches it, but only
     on the two apps whose entry script accepts --adopt-identity; on the other
-    sixteen nothing checks at all.
+    twenty-one nothing checks at all.
 
     Natively this cannot happen by accident - each account gets its own
     profile on its own port, which is what add_account.py and this panel's own
@@ -841,7 +841,7 @@ def api_due():
 #
 # Setting an account up meant hand-copying config.example.json to config.json
 # and editing it, and until you had, the panel listed that account as one more
-# thing wrong with your install - seventeen of eighteen rows on a fresh
+# thing wrong with your install - twenty-two of twenty-three rows on a fresh
 # checkout, none of which most people will ever use. So the register hides
 # them, and this is the button that turns one into a real account.
 #

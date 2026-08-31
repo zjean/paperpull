@@ -136,8 +136,8 @@ nothing ties that choice to a config — while the account holder stamped on
 every PDF and CSV row comes from the config file, never from the page. So with
 both accounts signed in to this one Chrome, a run can read the other account's
 tab and file its documents under the wrong person. `simyo` and `youfone` catch
-it (the identity gate below refuses rather than misfiling); the other sixteen
-apps do not check. The panel marks any account that shares a browser with
+it (the identity gate below refuses rather than misfiling); the other
+twenty-one apps do not check. The panel marks any account that shares a browser with
 another account of the same provider, in the register and on the account.
 
 ### First run after upgrading: adopt each account's identity

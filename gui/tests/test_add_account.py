@@ -2,8 +2,8 @@
 
 Setting an account up meant hand-copying `config.example.json` and editing it,
 and until you had, the panel listed that account as one more thing wrong with
-your install — seventeen of eighteen rows on a fresh checkout, most of which
-nobody will ever use. So the register hides them and `POST /api/accounts`
+your install — twenty-two of twenty-three rows on a fresh checkout, most of
+which nobody will ever use. So the register hides them and `POST /api/accounts`
 turns one into a real account.
 
 Two things make this worth testing carefully rather than lightly.
@@ -327,14 +327,14 @@ def test_it_is_the_only_route_that_writes():
 # The question this whole feature raises, and the answer is not "it is fine".
 # Every app finds its tab the same way - the first live page whose URL matches
 # the provider's host (simyo_site.find_signed_in_page; amex_docs' `amex[0] if
-# amex else ...`; the same shape in all eighteen) - and nothing ties that
+# amex else ...`; the same shape in all twenty-three) - and nothing ties that
 # choice to a config. The owner stamped on every PDF and every CSV row comes
 # from the config file, never from the page (storage.ensure_owner), so a run
 # that reads the other account's tab files those documents under the wrong
 # person and says nothing.
 #
-# paperpull_core.identity exists for exactly this, but only two of eighteen
-# apps accept --adopt-identity; on the other sixteen nothing checks.
+# paperpull_core.identity exists for exactly this, but only two of twenty-three
+# apps accept --adopt-identity; on the other twenty-one nothing checks.
 #
 # So: natively this must not be possible by accident, and where it IS the
 # default - the container's one shared browser - the panel has to say so.

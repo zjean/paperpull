@@ -22,6 +22,7 @@ what a human sitting down needs to be told about.
 from __future__ import annotations
 
 from datetime import date
+from statistics import median
 from typing import Iterable, List, Optional
 
 # Most providers here bill monthly. 31 days rather than 30 so a month-end
@@ -38,6 +39,73 @@ def _as_date(value: str) -> Optional[date]:
         return date.fromisoformat(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def measure_cadence(records: Iterable[dict]) -> Optional[int]:
+    """How often this provider issues documents, from this account's own history.
+
+    `DEFAULT_CADENCE_DAYS` is a guess that suits most of the providers here
+    and no quarterly one: judged against 31 days, a quarterly statement is
+    called due two months early, every quarter, and a weekly one is checked
+    long after the next document has landed. The archive already knows the
+    answer - `progress.json` holds every document's date - so it is measured
+    rather than assumed, and a `cadence_days` in the config still wins.
+
+    Three rules, each of which exists because of a way the naive version is
+    wrong:
+
+    * **Per provider-side account, then combined.** One install can cover
+      several of the provider's own accounts, each billed monthly. Pooling
+      their dates halves every gap and the account reports itself due a
+      fortnight after a statement arrives. Grouped, it reads monthly, which
+      is the truth. Accounts with too little history of their own fall back
+      to the pooled dates rather than to nothing.
+    * **The median, not the mean.** One late statement, or one year nobody
+      downloaded, must not move the answer.
+    * **Only gaps of 1 to 400 days.** Two records dated the same day say
+      nothing about a cadence, and a record dated year 0001 - which a
+      provider page can genuinely produce - would otherwise measure a cadence
+      of several centuries. The window is the filter for both.
+
+    Returns None when the history cannot answer: fewer than three dated
+    documents, fewer than two usable gaps, or a receipt archive. Receipt apps
+    record `purchase_date`, never `date`, and deliberately get no measurement
+    at all: purchases arrive when someone buys something, so a cadence
+    measured off them is noise wearing a number.
+    """
+    by_account: dict = {}
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        when = _as_date(rec.get("date"))
+        if when is None:
+            continue
+        by_account.setdefault(str(rec.get("account") or ""), []).append(when)
+    if not by_account:
+        return None
+    per = [c for c in (_gap_median(v) for v in by_account.values()) if c]
+    if not per:
+        pooled = [d for dates in by_account.values() for d in dates]
+        measured = _gap_median(pooled)
+        return int(round(measured)) if measured else None
+    return int(round(median(per)))
+
+
+def _gap_median(dates: List[date]) -> Optional[float]:
+    """The typical gap between consecutive documents, or None.
+
+    Only the last 24 gaps count: a provider that moved from monthly to
+    quarterly should read as quarterly within a couple of years, not be held
+    to an average of its whole history.
+    """
+    uniq = sorted(set(dates))
+    if len(uniq) < 3:
+        return None
+    gaps = [(b - a).days for a, b in zip(uniq, uniq[1:])
+            if 0 < (b - a).days <= 400]
+    if len(gaps) < 2:
+        return None
+    return median(gaps[-24:])
 
 
 def _is_due(account: dict, today: date) -> bool:

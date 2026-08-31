@@ -101,6 +101,45 @@ All notable changes to PaperPull are recorded here. Versioning follows
   (`index.html`, `panel.css`, `panel.js`), served `no-store` and read per
   request, so editing the page is a reload rather than a restart.
 
+- **How often a provider issues documents is now measured, not assumed.**
+  `due` judged every account against a flat 31 days unless its config named a
+  `cadence_days`, and almost none do. That is a fair guess for the monthly
+  providers here and wrong for every other shape: a quarterly account was
+  called due two months early, every quarter — nine wasted sign-ins a year for
+  one provider, and for the scheduler, nine unattended passes that could only
+  ever find nothing.
+
+  The archive already holds the answer, so `due.measure_cadence` reads it:
+  the median gap between consecutive documents in `progress.json`, measured
+  per provider-side account and then combined. Per account matters — one
+  install can cover several of the provider's own accounts, each billed
+  monthly, and pooling their dates halves every gap until the account reports
+  itself due a fortnight after a statement lands. The median rather than the
+  mean, so one late statement cannot move it; only gaps of 1 to 400 days, so
+  a record dated year 0001 (which a provider page can genuinely produce)
+  cannot measure a cadence of several centuries.
+
+  A `cadence_days` in the config still wins — it is a person's answer, and
+  `0` ("always due") is a real value there, so it is checked for `None`
+  rather than for truth. Receipt archives get no measurement at all: they
+  record `purchase_date`, not `date`, and purchases arrive when someone buys
+  something. The panel and the scheduler both read `due.plan`, so both get
+  this without a change of their own.
+
+  The same measurement is what upstream's new `tools/status.py` does for its
+  own report; this is the half of it the register and the nightly pass can
+  act on. That tool also runs in the container as it stands —
+  `docker compose run --rm paperpull python /app/tools/status.py --root /data`
+  — and is worth a look for the one thing nothing here answers: periods
+  missing from the *middle* of a history.
+- **The counts in the panel's own commentary say twenty-three.** Merging
+  upstream took the provider count from eighteen to twenty-three, and the
+  apps without an identity gate from sixteen to twenty-one — numbers that
+  appear in `gui/app.py`, `gui/README.md`, `docs/docker.md` and three test
+  docstrings as present-tense claims about what protects you. The sentences
+  written in the past tense, about defects that were fixed when the count
+  really was eighteen, are left as they are.
+
 ### Added
 - **`GET /api/state`** — everything the page draws itself from, in one request:
   the flat account list with its bucket, session, identity and dates already
