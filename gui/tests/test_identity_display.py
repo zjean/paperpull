@@ -1,4 +1,4 @@
-"""What the panel tells you about identity must not lie to the sixteen apps
+"""What the panel tells you about identity must not lie to the twenty-one apps
 that have no identity gate.
 
 The original defect: the panel's "No identity recorded... press Adopt
@@ -101,7 +101,7 @@ def _account(name="primary", gated=False, identified=False, needs="ok",
     return row
 
 
-# -- an app WITHOUT the identity gate (sixteen of eighteen, e.g. amex) -------
+# -- an app WITHOUT the identity gate (twenty-one of twenty-three, e.g. amex) -
 
 
 def test_an_ungated_app_is_never_told_to_confirm_anything():

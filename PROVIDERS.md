@@ -10,17 +10,22 @@ telecoms, payroll systems, and retailers real people actually use.
   [provider request](https://github.com/rheeloaded/paperpull/issues/new/choose)
   so someone with that account can pick it up.
 
-## Supported (18)
+## Supported (23)
 
 | App | Provider | Documents | Category |
 |-----|----------|-----------|----------|
+| [`aafmaa`](apps/aafmaa) | AAFMAA (Armed Forces Mutual) | Annual statements, policy & insurance documents | Insurance / member association |
 | [`ally`](apps/ally) | Ally Bank | Account statements, tax forms | Bank |
 | [`amazon`](apps/amazon) | Amazon | Order invoices (full history) | Retail |
 | [`amex`](apps/amex) | American Express | Statements, year-end summary | Card |
 | [`chase`](apps/chase) | Chase (credit cards) | Card statements | Card |
+| [`discovercard`](apps/discovercard) | Discover (credit cards) | Card statements | Card |
 | [`dominion`](apps/dominion) | Dominion Energy (VA) | Billing statements | Utility |
 | [`gap`](apps/gap) | Gap Inc. (Gap, Old Navy, Banana Republic, Athleta) | Order receipts | Retail |
+| [`mypay`](apps/mypay) | DFAS myPay | eRAS, CRSC, 1099-R, 1095 | Government pay system; JSON API, nothing clicked |
+| [`mtb`](apps/mtb) | M&T Bank | Mortgage statements, escrow, 1098 | Mortgage servicing |
 | [`navyfederal`](apps/navyfederal) | Navy Federal CU | Account statements | Bank / credit union |
+| [`paylocity`](apps/paylocity) | Paylocity | Pay statements | Payroll |
 | [`redcard`](apps/redcard) | Target RedCard / Circle Card (TD Bank) | Billing statements | Card |
 | [`robinhood`](apps/robinhood) | Robinhood | Account statements, tax docs | Brokerage |
 | [`simyo`](apps/simyo) | Simyo (Netherlands) | Invoices (facturen) | Telecom |

@@ -24,8 +24,8 @@ show`** line under it instead:
 - **Never used** — there is a `config.json`, but PaperPull has never signed in
   to the account or downloaded anything for it. In the container this is most
   of them: the entrypoint seeds a config for every app in the image, so a
-  household with two providers gets eighteen accounts whether it wants them or
-  not.
+  household with two providers gets twenty-three accounts whether it wants
+  them or not.
 - **Not set up yet** — no `config.json` at all. This is the native default for
   every provider you have not touched.
 
@@ -78,7 +78,7 @@ Worth knowing, because nothing outside the panel warns about it.
 
 Every app finds its tab the same way: **the first live tab whose address
 matches the provider's host** (`simyo_site.find_signed_in_page`, `amex_docs`'
-`amex[0] if amex else …`, and the same shape in all eighteen). Nothing ties
+`amex[0] if amex else …`, and the same shape in all twenty-three). Nothing ties
 that choice to a config. And the account holder stamped on every PDF and every
 index-CSV row comes from the config file, never from the page
 (`storage.ensure_owner`) — so a run that reads the wrong tab files those
@@ -93,7 +93,7 @@ documents under the wrong person.
   `cdp_url` points at it. For two *different* providers that is fine and
   intended — different hosts, different tabs. For two accounts of *one*
   provider it is not: `simyo` and `youfone` catch it (the identity gate refuses
-  rather than misfiling), and the other sixteen apps do not check at all. The
+  rather than misfiling), and the other twenty-one apps do not check at all. The
   fix is a second `browser` service with its own bridge port, with that
   account's `config.<name>.json` pointing at it — see
   [docs/docker.md](../docs/docker.md), *One shared browser*.
@@ -141,7 +141,7 @@ python -m uvicorn app:app --port 8765
 | — | **Re-check saved files** | Re-reads the PDFs already on disk; opens no browser |
 
 Only the actions an app's own entry script accepts are offered — `--adopt-identity`
-exists on two of the eighteen, and the panel reads each script to find out
+exists on two of the twenty-three, and the panel reads each script to find out
 rather than keeping a second list that could drift.
 
 ## Notes & limits

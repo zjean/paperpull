@@ -241,3 +241,132 @@ def test_accounts_honour_a_separate_config_root(tmp_path):
     assert rec["app"] == "testco"
     assert rec["account"] == "primary"
     assert rec["newest_document_date"] == "2026-07-01"
+
+
+# -- measured cadence --------------------------------------------------------
+# `cadence_days` used to be config-only, so an account that had never been
+# given one was judged against a flat 31 days: a quarterly provider looked due
+# every month, and a weekly one was checked long after the next document
+# landed. The history in progress.json already says how often this provider
+# issues documents, so it is measured from there and the config still wins.
+
+def _monthly(start_year=2026, start_month=1, count=8, account="primary"):
+    """count records, one a month, oldest first."""
+    recs = {}
+    for i in range(count):
+        month = start_month + i
+        year = start_year + (month - 1) // 12
+        recs["d%d" % i] = {"date": "%04d-%02d-05" % (year, (month - 1) % 12 + 1),
+                           "account": account}
+    return recs
+
+
+def test_a_monthly_history_measures_as_monthly():
+    got = due.measure_cadence(list(_monthly().values()))
+    assert 28 <= got <= 32, got
+
+
+def test_a_quarterly_history_is_not_judged_as_monthly():
+    recs = [{"date": d, "account": "primary"} for d in
+            ["2025-03-01", "2025-06-01", "2025-09-01", "2025-12-01",
+             "2026-03-01"]]
+    got = due.measure_cadence(recs)
+    assert 88 <= got <= 95, got
+    # The point of measuring: at 31 days this account would have been called
+    # due two months early, every quarter.
+    assert not due._is_due(
+        {"cadence_days": got, "newest_document_date": "2026-03-01",
+         "last_checked_date": "", "parked": False},
+        __import__("datetime").date(2026, 5, 1))
+
+
+def test_two_accounts_billed_monthly_do_not_read_as_fortnightly():
+    """One install can cover several of the provider's own accounts. Pooling
+    their dates halves every gap, and the archive then calls itself due a
+    fortnight after a statement arrives."""
+    recs = list(_monthly(account="cheque").values())
+    mid = {"m%d" % i: {"date": "2026-%02d-20" % (i + 1), "account": "savings"}
+           for i in range(8)}
+    recs += list(mid.values())
+    got = due.measure_cadence(recs)
+    assert 28 <= got <= 32, got
+
+
+def test_too_little_history_measures_nothing():
+    """Two documents is one gap, and one gap is an anecdote."""
+    assert due.measure_cadence(
+        [{"date": "2026-01-05"}, {"date": "2026-02-05"}]) is None
+
+
+def test_a_receipt_archive_measures_nothing():
+    """Receipt apps record `purchase_date`, not `date`, because purchases
+    arrive irregularly - a cadence measured off them would be noise."""
+    recs = [{"purchase_date": "2026-0%d-01" % i} for i in range(1, 6)]
+    assert due.measure_cadence(recs) is None
+
+
+def test_one_absurd_date_cannot_set_the_cadence():
+    """Both values below can come from a provider page: a record dated in
+    year 0001 would otherwise measure a cadence of several centuries."""
+    recs = [{"date": d} for d in
+            ["0001-01-01", "2026-01-05", "2026-02-05", "2026-03-05",
+             "2026-04-05"]]
+    got = due.measure_cadence(recs)
+    assert 28 <= got <= 32, got
+
+
+def test_a_measured_cadence_reaches_the_account_list(tmp_path):
+    """End to end: history on disk, no cadence in the config."""
+    from paperpull_core import appload
+    import json
+
+    app_dir = tmp_path / "apps" / "testco"
+    app_dir.mkdir(parents=True)
+    (app_dir / "testco_docs.py").write_text("", encoding="utf-8")
+    out = tmp_path / "data" / "testco"
+    out.mkdir(parents=True)
+    (app_dir / "config.json").write_text(
+        '{"output_dir": "%s"}' % out.as_posix(), encoding="utf-8")
+    (out / "progress.json").write_text(json.dumps(_monthly()), encoding="utf-8")
+
+    rec = appload.accounts(tmp_path / "apps", None)[0]
+    assert 28 <= rec["cadence_days"] <= 32, rec["cadence_days"]
+
+
+def test_a_cadence_in_the_config_still_wins(tmp_path):
+    """Measuring is a fallback for accounts nobody has told. An explicit
+    value is a person's answer and outranks the history."""
+    from paperpull_core import appload
+    import json
+
+    app_dir = tmp_path / "apps" / "testco"
+    app_dir.mkdir(parents=True)
+    (app_dir / "testco_docs.py").write_text("", encoding="utf-8")
+    out = tmp_path / "data" / "testco"
+    out.mkdir(parents=True)
+    (app_dir / "config.json").write_text(
+        '{"output_dir": "%s", "cadence_days": 7}' % out.as_posix(),
+        encoding="utf-8")
+    (out / "progress.json").write_text(json.dumps(_monthly()), encoding="utf-8")
+
+    rec = appload.accounts(tmp_path / "apps", None)[0]
+    assert rec["cadence_days"] == 7
+
+
+def test_a_zero_in_the_config_is_not_overruled_by_the_history(tmp_path):
+    """0 means "always due" and is falsy - the reason this is a test."""
+    from paperpull_core import appload
+    import json
+
+    app_dir = tmp_path / "apps" / "testco"
+    app_dir.mkdir(parents=True)
+    (app_dir / "testco_docs.py").write_text("", encoding="utf-8")
+    out = tmp_path / "data" / "testco"
+    out.mkdir(parents=True)
+    (app_dir / "config.json").write_text(
+        '{"output_dir": "%s", "cadence_days": 0}' % out.as_posix(),
+        encoding="utf-8")
+    (out / "progress.json").write_text(json.dumps(_monthly()), encoding="utf-8")
+
+    rec = appload.accounts(tmp_path / "apps", None)[0]
+    assert rec["cadence_days"] == 0

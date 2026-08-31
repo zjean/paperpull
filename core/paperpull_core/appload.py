@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from . import sentinel
+from . import due, sentinel
 
 # An app directory is one that has an entry script - gui/app.py's own test for
 # "is this a downloader" - not one that happens to have a storage.py. A fake
@@ -132,19 +132,32 @@ def load_spec(app_dir: Path):
     return module.SPEC
 
 
-def _newest_document_date(progress_json: Path) -> str:
-    """The date of the newest document this account has ever recorded."""
+def _document_records(progress_json: Path) -> List[dict]:
+    """Every record in this account's progress.json, or [].
+
+    Read once and asked two questions - the newest date, and the cadence -
+    because both callers below want the same file and it is the largest thing
+    either of them reads.
+    """
     try:
         data = json.loads(progress_json.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return ""
+        return []
     if not isinstance(data, dict):
-        return ""
+        return []
     # Every record this file has ever held is a dict {"date": ...}. A record
     # that is not - a hand-edited file, a partial write - is skipped rather
     # than trusted, the same way an unparsable date already is below.
-    dates = [str(rec.get("date") or "").strip()
-             for rec in data.values() if isinstance(rec, dict)]
+    return [rec for rec in data.values() if isinstance(rec, dict)]
+
+
+def _newest_document_date(progress_json: Path) -> str:
+    """The date of the newest document this account has ever recorded."""
+    return _newest_of(_document_records(progress_json))
+
+
+def _newest_of(records: List[dict]) -> str:
+    dates = [str(rec.get("date") or "").strip() for rec in records]
     dates = [d for d in dates if d]
     return max(dates) if dates else ""
 
@@ -224,7 +237,7 @@ def accounts(apps_root: Path, config_root: Optional[Path]) -> List[dict]:
                 continue
             output_dir = Path(cfg.get("output_dir") or "")
             if not output_dir.is_absolute():
-                # Every one of the 18 shipped config.example.json files says
+                # Every one of the 23 shipped config.example.json files says
                 # "output_dir": ".". That is meaningful only to the downloader
                 # itself, which is launched with its own app directory as the
                 # working directory (gui/app.py's Popen, tools/schedule.py's
@@ -242,15 +255,24 @@ def accounts(apps_root: Path, config_root: Optional[Path]) -> List[dict]:
                 output_dir = app_dir / output_dir
             session = session_record(output_dir)
             last_alive = str(session.get(sentinel.LAST_ALIVE_KEY) or "")
+            records = _document_records(output_dir / "progress.json")
+            # A cadence in the config is a person's answer and outranks the
+            # history; `is not None` rather than `or`, because 0 is a real
+            # value there ("always due") and a falsy one. Only when nobody has
+            # said is it measured, and only then does `due` fall back to its
+            # flat 31 days - which suits most providers here and no quarterly
+            # one.
+            cadence = cfg.get("cadence_days")
+            if cadence is None:
+                cadence = due.measure_cadence(records)
             out.append({
                 "app": app_dir.name,
                 "account": label,
                 "config": str(cfg_path),
                 "output_dir": str(output_dir),
                 "session_lifetime_minutes": lifetime,
-                "cadence_days": cfg.get("cadence_days"),
-                "newest_document_date": _newest_document_date(
-                    output_dir / "progress.json"),
+                "cadence_days": cadence,
+                "newest_document_date": _newest_of(records),
                 "last_checked_date": last_alive[:10],
                 "parked": session.get(sentinel.STATE_KEY) == sentinel.PARKED,
                 "parked_reason": str(

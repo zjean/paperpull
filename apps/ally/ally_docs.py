@@ -199,8 +199,10 @@ class App:
         if self._cdp_mode:
             # Reuse the user's signed-in Ally tab (secure.ally.com keeps the
             # session there; a fresh tab may be unauthenticated).
+            # Matched on parsed host, not substring: "provider.com" in the
+            # URL also matches "provider.com.phish.example".
             live = [p for p in ctx.pages if not p.is_closed()]
-            ally = [p for p in live if "ally.com" in (p.url or "")]
+            ally = [p for p in live if site.is_safe_url(p.url or "")]
             self._work_page = ally[0] if ally else (live[0] if live else ctx.new_page())
         else:
             self._work_page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -585,6 +587,17 @@ class App:
                                    out_path, doc.occurrence, doc.document_id,
                                    doc.kind, doc.title)
         if not saved:
+            # A failed capture must not leave a file behind. Playwright's
+            # save_as creates the target before the bytes arrive, so a
+            # capture that fails leaves a ZERO BYTE file with a convincing
+            # statement name in the output folder, indistinguishable from a
+            # real download until it is opened.
+            try:
+                if out_path.exists() and (out_path.stat().st_size == 0
+                                          or out_path.read_bytes()[:5] != b"%PDF-"):
+                    out_path.unlink()
+            except OSError:
+                pass
             self._record(doc, State.NEEDS_MANUAL_REVIEW,
                          notes="Could not capture the document PDF "
                                "(see the log; it may pre-date what Ally's "
@@ -850,9 +863,9 @@ class App:
         print(f"Wrote {out}")
         print(f"Rows collected: {info.get('collected', '?')}")
         refused = [s for s in info.get("selects", [])
-                   if s.get("refused_as_money_control")]
+                   if s.get("refused")]
         if refused:
-            print(f"Dropdowns refused as money controls: {len(refused)}")
+            print(f"Dropdowns refused by the control guard: {len(refused)}")
             for s in refused[:4]:
                 print(f"  refused: {s['identity'][:70]}")
         if info.get("account_options"):

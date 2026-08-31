@@ -103,7 +103,7 @@ nothing already downloaded is fetched twice.
 | any time | `verify_documents.bat` | `./verify_documents.command` | Re-validate every indexed PDF |
 | if it breaks | `diagnose.bat` | `./diagnose.command` | Dumps what the page shows. Downloads nothing |
 
-Port **9238** keeps this separate from the other apps, so several signed-in
+Port **9243** keeps this separate from the other apps, so several signed-in
 browsers can be open at once. `cdp_url` is **required** here, not optional:
 there is no "let the app drive its own browser" mode.
 

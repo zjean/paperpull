@@ -190,8 +190,10 @@ class App:
         if self._cdp_mode:
             # Reuse the user's signed-in Navy Federal tab (the digitalomni portal
             # keeps its session there; a fresh tab is unauthenticated).
+            # Matched on parsed host, not substring: "provider.com" in the
+            # URL also matches "provider.com.phish.example".
             live = [p for p in ctx.pages if not p.is_closed()]
-            nfcu = [p for p in live if "navyfederal" in (p.url or "")]
+            nfcu = [p for p in live if site.is_safe_url(p.url or "")]
             self._work_page = nfcu[0] if nfcu else (live[0] if live else ctx.new_page())
         else:
             self._work_page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -373,7 +375,7 @@ class App:
             date, _ = site.parse_period_date(d.get("displayDate") or title)
             date = date or ""
         # Honor the date floor at discovery so discovery.json holds only what
-        # is in scope (You wants 2024-01-01 onward).
+        # is in scope, honouring default_start_date from config.
         floor = self.args.start_date or self.config.get("default_start_date")
         if floor and (not date or date < floor):
             self.stats["skipped_out_of_scope"] += 1
@@ -512,6 +514,17 @@ class App:
             site.ensure_statements(page)
         saved = site.nfcu_download(page, page.context, doc.account, doc.date, out_path)
         if not saved:
+            # A failed capture must not leave a file behind. Playwright's
+            # save_as creates the target before the bytes arrive, so a
+            # capture that fails leaves a ZERO BYTE file with a convincing
+            # statement name in the output folder, indistinguishable from a
+            # real download until it is opened.
+            try:
+                if out_path.exists() and (out_path.stat().st_size == 0
+                                          or out_path.read_bytes()[:5] != b"%PDF-"):
+                    out_path.unlink()
+            except OSError:
+                pass
             self._record(doc, State.NEEDS_MANUAL_REVIEW,
                          notes="Could not capture the document PDF")
             self._write_row(doc, "Capture failed", "Needs Manual Review")

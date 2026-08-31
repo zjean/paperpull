@@ -104,8 +104,7 @@ def test_card_specific_actions_are_never_safe():
 
 def test_document_actions_are_safe():
     for label in ["Download", "Download PDF", "View statement",
-                  "Download statement", "View document", "Open PDF", "Save",
-                  "View 1099", "Statement PDF", "View tax form"]:
+                  "Download statement", "View document", "Open PDF", "View 1099", "Statement PDF", "View tax form"]:
         assert site.is_safe_control(label), label
 
 
@@ -219,3 +218,69 @@ def test_money_widgets_are_still_refused():
     for identity in ("fromAccount | transfer-form | Transfer money",
                      "payee | billpay", "amount | send money"):
         assert site.is_forbidden_control_context(identity), identity
+
+
+def test_a_bare_save_is_refused_on_purpose():
+    """"Save" used to count as a document action here. On a site that can move
+    money it is far more likely to commit a settings change, and allowing it
+    was why "Save Changes" passed the guard. "Save PDF" still passes, because
+    that one names the document."""
+    for label in ["Save", "Save Changes", "Save Settings"]:
+        assert not site.is_safe_control(label), label
+
+
+# -- what a review found before this app was first run ----------------------
+
+def test_a_card_whose_NAME_contains_rewards_is_still_discoverable():
+    """The general blocklist refuses "rewards", because "Redeem rewards" is a
+    real control on a card page. But it is also the NAME of some of the most
+    common Chase cards, and judging the accordion header by that list skipped
+    those cards entirely, along with every statement they held. The run still
+    reported success, so the card was simply absent."""
+    for card in ["AMAZON PRIME REWARDS VISA SIGNATURE (...1234)",
+                 "SOUTHWEST RAPID REWARDS PLUS (...1234)",
+                 "IHG ONE REWARDS PREMIER (...1234)",
+                 "DOORDASH REWARDS MASTERCARD (...1234)",
+                 "UNITED MILEAGEPLUS EXPLORER (...1234)",
+                 "FREEDOM UNLIMITED (...1234)"]:
+        assert site.is_card_control(card), card
+
+
+def test_a_card_shaped_control_that_acts_is_still_refused():
+    """Relaxing the header check must not let an action through just because
+    it carries a card number."""
+    for label in ["Pay SAPPHIRE RESERVE (...1234)", "Redeem rewards (...1234)",
+                  "Transfer balance (...1234)", "Activate (...1234)",
+                  "Manage AutoPay (...1234)", "Close account (...1234)",
+                  "Update settings (...1234)", "Request credit increase (...1234)"]:
+        assert not site.is_card_control(label), label
+
+
+def test_a_statement_row_for_a_rewards_card_is_accepted():
+    """The row's accessible name embeds the card name, so it hit the same
+    wall as the header."""
+    ok = "Aug 09, 2026 Statement SOUTHWEST RAPID REWARDS PLUS (...1234) Saves document"
+    assert site.is_safe_row_control(ok)
+    bad = "Aug 09, 2026 Pay SOUTHWEST RAPID REWARDS PLUS (...1234) Saves document"
+    assert not site.is_safe_row_control(bad)
+    assert not site.is_safe_row_control("")
+
+
+def test_pagination_never_clicks_an_unreadable_control():
+    """The selector matched any element whose class merely contained "next",
+    and an icon-only chevron has no text or aria-label for the blocklist to
+    judge, so it was clicked blind on a bank page."""
+    assert "class*='next'" not in site.FALLBACK["next_page"]
+    src = (Path(__file__).resolve().parents[1] / "chase_site.py").read_text(encoding="utf-8")
+    assert "if not label.strip() or FORBIDDEN_CONTROL_RE.search(label)" in src
+
+
+def test_the_document_fetch_is_host_checked():
+    """That fetch carries the signed-in session, so the address it is given
+    has to be Chase's."""
+    src = (Path(__file__).resolve().parents[1] / "chase_site.py").read_text(encoding="utf-8")
+    assert 'if not url.startswith("blob:") and not is_safe_url(url)' in src
+    assert site.is_safe_url("https://secure.chase.com/a/b.pdf")
+    for bad in ["https://evil.test/x.pdf", "https://secure.chase.com.evil.test/x.pdf",
+                "http://secure.chase.com/x.pdf", "https://secure.chase.com@evil.test/x"]:
+        assert not site.is_safe_url(bad), bad
