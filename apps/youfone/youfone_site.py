@@ -102,6 +102,11 @@ log = logging.getLogger("youfone_docs.site")
 
 BASE = "https://my.youfone.nl"
 HOST = "my.youfone.nl"
+# The one host this app may ever request. A set, and named this, because the
+# repo-wide guard test in core/tests reads it to build the hostile URLs it
+# expects every app to refuse — a provider that keeps its allowed host to
+# itself is one the test can only check the host-independent shapes against.
+ALLOWED_HOSTS = {HOST}
 
 URLS = {
     "home": f"{BASE}/",
@@ -234,25 +239,47 @@ def is_safe_route(href: str) -> bool:
     return path == DOCUMENTS_ROUTE or path.startswith(DOCUMENTS_ROUTE + "/")
 
 
+def is_safe_url(url: str) -> bool:
+    """Is this a URL this app is willing to request at all?
+
+    Host only, deliberately: what may be *fetched* and what a document
+    response may *be* are two different questions, and `is_safe_pdf_url`
+    below answers the second by adding the endpoint rule to this one.
+
+    Compared by parsed host, never by prefix — `https://my.youfone.nl.evil.test/`
+    and `https://my.youfone.nl@evil.test/` both start with the right address
+    while pointing somewhere else. Credentials in a URL are never legitimate
+    here and are the classic way to disguise the real host; a port other than
+    443 on an https URL is not something this portal ever serves.
+    """
+    try:
+        got = urlparse(url or "")
+    except ValueError:
+        return False
+    if got.scheme != "https" or not got.hostname:
+        return False
+    if got.hostname.lower() not in ALLOWED_HOSTS:
+        return False
+    if got.port not in (None, 443):
+        return False
+    if got.username or got.password:
+        return False
+    return True
+
+
 def is_safe_pdf_url(url: str) -> bool:
     """Is this the response of one of the two document endpoints?
 
     Used to check what a click actually called, so an unexpected answer is
     reported instead of written to disk as if it were an invoice.
     """
+    if not is_safe_url(url):
+        return False
     try:
-        got = urlparse(url or "")
+        path = urlparse(url).path or ""
     except ValueError:
         return False
-    if got.scheme != "https":
-        return False
-    if (got.hostname or "").lower() != HOST:
-        return False
-    if got.port not in (None, 443):
-        return False
-    if got.username or got.password:
-        return False
-    return (got.path or "") in ALLOWED_ENDPOINTS
+    return path in ALLOWED_ENDPOINTS
 
 
 # ---------------------------------------------------------------------------

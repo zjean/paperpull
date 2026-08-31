@@ -34,6 +34,15 @@ All notable changes to PaperPull are recorded here. Versioning follows
     entrypoint rewrites every `cdp_url` to the one shared browser; on a native
     install the collision is real, and it is exactly the wrong-tab failure the
     identity gate exists to catch.
+  - **`youfone` gained the URL guard upstream now requires of every app.**
+    Its 0.17.0 added `core/tests/test_every_app_guard.py`, which walks every
+    directory under `apps/` and fails one that has no `is_safe_url` — and
+    Youfone's host check was real but lived under a different name
+    (`is_safe_pdf_url`, host *and* endpoint in one function). It is now two:
+    `is_safe_url` answers "may this be fetched at all", `is_safe_pdf_url`
+    adds the endpoint rule on top, and `ALLOWED_HOSTS` is declared so the
+    repo-wide test builds its hostile URLs from Youfone's own host rather
+    than only checking the host-independent shapes. `simyo` already passed.
   - **The account facts upstream scrubbed from its old release notes stay
     scrubbed here.** Its 0.17.0 removed statement counts and date ranges from
     entries this fork had copied verbatim; taking our older wording back would
@@ -209,6 +218,13 @@ All notable changes to PaperPull are recorded here. Versioning follows
   session the provider killed.** An absence is not a failure.
 - The register no longer prints "Nothing to do" on every one of sixteen rows
   under a heading that already says it.
+- **`pytest core/tests gui/tests` collects again.** Two test files were both
+  named `test_due.py`, and pytest's default import mode names a module by its
+  basename, so collecting the second one errored out on the first. CI never
+  saw it because it runs the two suites as separate invocations; the combined
+  command in the docs — the one a person runs before merging — has been
+  failing since `gui/tests/test_due.py` was added. The panel's copy is now
+  `gui/tests/test_api_due.py`, which is what it actually tests.
 
 ## [0.11.0] — 2026-08-22
 
