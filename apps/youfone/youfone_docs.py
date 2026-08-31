@@ -307,7 +307,7 @@ class App:
                 'No "cdp_url" is set in this config.\n'
                 "Youfone can only be read through a browser you signed in to\n"
                 "yourself, so this app always attaches over the DevTools port.\n"
-                'Set "cdp_url": "http://localhost:9238" and run login.command.')
+                'Set "cdp_url": "http://localhost:9243" and run login.command.')
         try:
             self._browser = self._pw.chromium.connect_over_cdp(cdp_url)
         except Exception as e:
@@ -514,7 +514,7 @@ class App:
         saved session - so nothing is duplicated in the launcher scripts. You
         sign in; the tool attaches afterwards.
         """
-        port = browser_launcher.port_from_cdp_url(self.config.get("cdp_url", ""), "9238")
+        port = browser_launcher.port_from_cdp_url(self.config.get("cdp_url", ""), "9243")
         profile = self.config["profile_dir"]
 
         name = browser_launcher.open_signin_browser(

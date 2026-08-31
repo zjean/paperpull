@@ -8,7 +8,7 @@
   "//2": "so cdp_url is required here rather than optional: this app always",
   "//3": "attaches to that window and never opens or navigates a tab of its",
   "//4": "own. A second Mijn Simyo tab signs you out of the first.",
-  "cdp_url": "http://localhost:9237",
+  "cdp_url": "http://localhost:9242",
 
   "//5": "How many days after this account's newest invoice before it counts",
   "//6": "as due again (tools/due.py, the panel's sitting, the scheduler).",

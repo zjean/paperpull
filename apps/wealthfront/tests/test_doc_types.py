@@ -98,7 +98,7 @@ def test_tax_document_filename():
     assert name == "2025-12-31 Wealthfront 1099-B Tax Form.pdf"
 
 
-# -- row parsing (real shapes captured from the live page 2026-07) --------
+# -- row parsing (shapes this parser must handle 2026-07) --------
 
 def test_parse_tax_row():
     d = site.parse_row(["Joint Cash Account", "Form 1099"])
@@ -126,17 +126,17 @@ def test_parse_dated_row_extracts_account():
 
 
 def test_account_custodian_parenthetical_is_trimmed():
-    """Real title: 'Quarterly Statement for Emma's 529 Account (from
+    """Title shape: 'Quarterly Statement for Jordan's 529 Account (from
     Wealthfront Brokerage Corp)' - the custodian suffix must not bloat the
     filename."""
     d = site.parse_row(
         ["06/30/2026",
-         "Quarterly Statement for Emma's 529 Account (from Wealthfront Brokerage Corp)"])
-    assert d.account == "Emma's 529 Account"
+         "Quarterly Statement for Jordan's 529 Account (from Wealthfront Brokerage Corp)"])
+    assert d.account == "Jordan's 529 Account"
 
 
 def test_parse_statement_row():
-    d = site.parse_row(["01/05/2025", "Monthly Statement for You's Roth IRA"])
+    d = site.parse_row(["01/05/2025", "Monthly Statement for Jordan's Roth IRA"])
     assert d.kind == "dated"
     cat, summary, _ = doc_types.classify_document(d.title, RULES)
     assert cat == doc_types.STATEMENT and summary == "Monthly Statement"

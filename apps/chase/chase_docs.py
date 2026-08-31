@@ -95,7 +95,14 @@ class Document:
         for anything discovered without one."""
         if self.document_id:
             return f"id:{self.document_id}"
-        acct = sanitize_component(self.account or "")[:40]
+        # Keep the last four in the key. Truncating to 40 characters made
+        # two cards of the same product collide ("MARRIOTT BONVOY
+        # BOUNDLESS CREDIT CARD (...1234)" and "(...5678)" share a
+        # prefix), and the second card's whole history was dropped as a
+        # duplicate without a word.
+        raw = sanitize_component(self.account or "")
+        last4 = re.search(r"(\d{4})\s*\)?\s*$", raw)
+        acct = raw[:40] + ("-" + last4.group(1) if last4 else "")
         return f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}:{acct}"
 
     def to_dict(self) -> dict:
@@ -196,8 +203,10 @@ class App:
         if self._cdp_mode:
             # Reuse the user's signed-in Chase tab (secure.chase.com keeps the
             # session there; a fresh tab may be unauthenticated).
+            # Matched on parsed host, not substring: "provider.com" in the
+            # URL also matches "provider.com.phish.example".
             live = [p for p in ctx.pages if not p.is_closed()]
-            chase = [p for p in live if "chase.com" in (p.url or "")]
+            chase = [p for p in live if site.is_safe_url(p.url or "")]
             self._work_page = chase[0] if chase else (live[0] if live else ctx.new_page())
         else:
             self._work_page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -485,6 +494,17 @@ class App:
                                    out_path, doc.occurrence, doc.document_id,
                                    title=doc.title)
         if not saved:
+            # A failed capture must not leave a file behind. Playwright's
+            # save_as creates the target before the bytes arrive, so a capture
+            # that fails leaves a ZERO BYTE file sitting in Statements with a
+            # perfectly convincing name. Five of those looked like downloaded
+            # statements until they were opened.
+            try:
+                if out_path.exists() and (out_path.stat().st_size == 0
+                                          or out_path.read_bytes()[:5] != b"%PDF-"):
+                    out_path.unlink()
+            except OSError:
+                pass
             self._record(doc, State.NEEDS_MANUAL_REVIEW,
                          notes="Could not capture the document PDF (see the log)")
             self._write_row(doc, "Capture failed", "Needs Manual Review")
@@ -750,9 +770,9 @@ class App:
         print(f"Wrote {out}")
         print(f"Rows collected: {info.get('collected', '?')}")
         refused = [s for s in info.get("selects", [])
-                   if s.get("refused_as_money_control")]
+                   if s.get("refused")]
         if refused:
-            print(f"Dropdowns refused as money controls: {len(refused)}")
+            print(f"Dropdowns refused by the control guard: {len(refused)}")
             for s in refused[:4]:
                 print(f"  refused: {s['identity'][:70]}")
         if info.get("account_options"):

@@ -118,7 +118,7 @@ config and never from the page.
 | any time | `verify_documents.bat` | `./verify_documents.command` | Re-validate every indexed PDF |
 | if it breaks | `diagnose.bat` | `./diagnose.command` | Dumps what the API returned. Downloads nothing |
 
-Port **9237** keeps this separate from the other apps, so several signed-in
+Port **9242** keeps this separate from the other apps, so several signed-in
 browsers can be open at once. `cdp_url` is **required** here, not optional:
 there is no "let the app drive its own browser" mode, because that mode would
 have to navigate.

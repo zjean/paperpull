@@ -10,10 +10,10 @@ summaries have their own tabs in Chase and are deliberately not collected —
 than half-filed. Deposit accounts, mortgages, auto loans and J.P. Morgan
 investment accounts are not covered either.
 
-Verified against a live account on 2026-08-18: 333 statements across 6 cards
-and 2019–2026, downloaded and checked against the account number printed
-inside each PDF; delete-safe re-run confirmed, from the launchers and from
-the control panel.
+Verified end to end against a live account on 2026-08-18. Statements were
+downloaded and checked against the account number printed inside each PDF, and
+a delete-safe re-run was confirmed, both from the launchers and from the
+control panel.
 
 ## A real browser, always
 
@@ -83,8 +83,8 @@ corrupted data before it was fixed:
 - **The picker's options are not named by year alone.** The last one reads
   "2019, you've reached the end of the list" and the current one "2020,
   current selection". Matching the whole name against the year silently
-  reported the oldest year as "not offered" — 36 statements missed with no
-  error. Only the start of the name is matched now.
+  reported the oldest year as "not offered", so a whole year was missed with
+  no error. Only the start of the name is matched now.
 - **Identical content is not identical bytes.** Chase regenerates a PDF per
   request, so the same statement fetched twice differs by a few bytes. A
   hash comparison will not catch a duplicate; the card-and-date check will.

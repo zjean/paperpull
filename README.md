@@ -12,17 +12,22 @@ of clicking through each site by hand.
 
 Runs on **Windows and macOS** (and Linux), with the same commands on each.
 
-Seventeen providers are supported today, all built on the same pattern:
+Twenty-three providers are supported today, all built on the same pattern:
 
 | App | Provider | Documents | Notes |
 |-----|----------|-----------|-------|
+| [`aafmaa`](apps/aafmaa) | AAFMAA (Armed Forces Mutual) | Annual statements, policy docs | ASP.NET WebForms; one documented disclosure dialog |
 | [`ally`](apps/ally) | Ally Bank | Account statements, tax forms | JSON API; same-dated statements named from the PDF |
 | [`amazon`](apps/amazon) | Amazon | Order invoices (full history) | Per-year order pagination |
 | [`amex`](apps/amex) | American Express | Statements, Year-End Summary | Click-nav SPA; in-memory session |
 | [`chase`](apps/chase) | Chase (credit cards) | Card statements | Real Edge/Chrome; per-card accordions + year picker |
+| [`discovercard`](apps/discovercard) | Discover (credit cards) | Card statements | Direct PDF URLs; whole index in one read; ~2-year limit |
 | [`dominion`](apps/dominion) | Dominion Energy (VA) | Billing statements | Paginated MUI accordion; ~18-month limit |
 | [`gap`](apps/gap) | Gap Inc. (Gap, Old Navy, Banana Republic, Athleta) | Order receipts | Lazy-loading history; ~13-month limit |
+| [`mypay`](apps/mypay) | DFAS myPay | eRAS, CRSC, 1099-R, 1095 | Government pay system; JSON API, nothing clicked |
+| [`mtb`](apps/mtb) | M&T Bank | Mortgage statements, escrow, 1098 | Own online banking; you list, app expands all years |
 | [`navyfederal`](apps/navyfederal) | Navy Federal CU | Account statements | Per-account accordions; blob-tab PDFs |
+| [`paylocity`](apps/paylocity) | Paylocity | **Pay statements** | Escher JSON API, enqueue-poll-fetch PDF; nothing clicked |
 | [`redcard`](apps/redcard) | Target RedCard / Circle Card (TD Bank) | Billing statements | Statements table; per-year switcher |
 | [`robinhood`](apps/robinhood) | Robinhood | Account statements, tax docs | "View More" pagination |
 | [`simyo`](apps/simyo) | Simyo (NL) | Invoices (facturen) | JSON API, nothing clicked; one tab only — a second signs you out |
@@ -346,6 +351,75 @@ run_all.bat               REM download everything available
 
 Each app also has its own README with provider-specific details and quirks.
 (Prefer to set apps up one at a time? Each has its own `setup.bat` / `setup.command`.)
+
+## Knowing when to run it again
+
+`tools/status.py` reads the state each app already keeps and reports how current
+every archive is. Copy it and `status.bat` next to your install folders and run
+it. It downloads nothing and changes nothing.
+
+```
+PROVIDER                     DOCS  NEWEST          AGE  ISSUES     STATUS
+Some Payroll                   12  2026-06-18     72 d  2x month   !! OVERDUE
+A Bank                         97  2026-06-30     60 d  monthly    *  due
+A Mortgage                     93  2026-07-31     29 d  monthly       current
+A Shop                        667  2026-08-13     16 d  -             ongoing
+```
+
+It reports the archives you **have**. Nobody holds an account with every
+provider, so a folder you never set up, or one left behind by a closed account,
+is left out entirely rather than listed as missing or overdue. An archive that
+was set up but never downloaded anything is called out by name, since that is
+the one state a single run fixes.
+
+It answers "is something new probably waiting" rather than "when did I last run
+this", which are different questions. A run that only verified existing files
+still updates a timestamp while telling you nothing about whether a new
+statement exists. So the signal is the date of the newest document you actually
+hold, measured against how often that provider issues them.
+
+The cadence comes from your own history and is measured per account, so nothing
+has to be configured, and a provider that moves from monthly to quarterly
+corrects itself. Measuring per account matters: one bank folder can cover
+several accounts, and pooling their dates makes a monthly cycle look weekly.
+Receipt archives are shown without a due date, because purchases arrive
+irregularly and "40 days overdue" would be noise.
+
+### It also looks for holes in the middle
+
+Being up to date is not the same as being complete. An archive can hold a
+document from last week and still be missing whole years behind it, which is
+exactly what happened twice while building this: one mortgage archive held a
+single year of a seven year history, and a payroll archive quietly defaulted to
+year to date. Both looked healthy by their newest document.
+
+So each series is also checked for periods that look missing from the middle:
+
+```
+Possible gaps. A run that looks current can still be missing
+periods in the middle, so these are worth a look.
+  A Bank
+     2025-03-18 to 2025-05-17   1 missing   3 series, including Savings
+     2026-01-01 to 2026-04-02   2 missing   3 series, including Savings
+```
+
+The hard part is not finding gaps, it is not inventing them. Plenty of real
+documents arrive irregularly, insurance ID cards and policy renewals among
+them, where a long quiet stretch means nothing was issued rather than something
+was missed. Flagging those would train you to ignore the report, so a series
+has to earn an opinion first: at least six documents, a median interval of ten
+days or more, and at least 65 percent of its intervals close to that median.
+Only then is an interval roughly twice the usual one reported, and it is
+reported as possible rather than certain.
+
+Windows shared by several series are grouped, because one account missing a
+month is usually a quiet month, while the same window missing across several at
+once is what a run that failed part way looks like.
+
+`--html` also writes a `status.html` dashboard you can bookmark, and `--quiet`
+prints only what needs attention. The dashboard reads no document contents and
+carries no amounts or account numbers, but it does list which providers you
+hold accounts with, so it belongs with your installs and is gitignored here.
 
 ## Windows and macOS
 
